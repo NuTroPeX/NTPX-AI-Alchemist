@@ -66,4 +66,18 @@ class AuditLogTest {
         val b = AuditHashing.hash(0, 0, "a", "bc", AuditType.STEP_STARTED, "", AuditHashing.GENESIS)
         assertTrue(a != b)
     }
+
+    @Test
+    fun concurrentAppendsReachCallbackInSequenceOrder() {
+        val persisted = java.util.Collections.synchronizedList(mutableListOf<AuditEntry>())
+        val log = InMemoryAuditLog(capacity = 10_000, onAppend = {
+            Thread.yield() // widen the race window
+            persisted += it
+        })
+        val threads = List(8) { t -> Thread { repeat(250) { log.append("a$t", "t", AuditType.STEP_STARTED, "$it") } } }
+        threads.forEach(Thread::start)
+        threads.forEach(Thread::join)
+        assertEquals((0L until 2_000L).toList(), persisted.map { it.sequence })
+        assertEquals(ChainVerification.Valid, AuditLog.verifyChain(persisted.toList()))
+    }
 }

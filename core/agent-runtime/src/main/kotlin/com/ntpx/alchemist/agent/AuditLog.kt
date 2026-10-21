@@ -96,6 +96,7 @@ interface AuditLog {
 /**
  * Thread-safe hash-chained audit log held in memory. [onAppend] lets the host persist
  * each entry (the app writes JSON lines to private storage) without this module knowing how.
+ * [onAppend] runs under the log's lock, in sequence order, so it must be quick (e.g. enqueue to a writer thread).
  * When [capacity] is exceeded the oldest entries are dropped; the retained tail still
  * verifies because its first entry carries the previous hash.
  */
@@ -123,9 +124,10 @@ class InMemoryAuditLog(
             val hash = AuditHashing.hash(sequence, timestamp, agentId, taskId, type, detail, previous)
             val created = AuditEntry(sequence, timestamp, agentId, taskId, type, detail, previous, hash)
             state.value = (state.value + created).takeLast(capacity)
+            // Inside the lock so persistence sees entries in sequence order; keep callbacks fast (enqueue, don't block).
+            onAppend(created)
             created
         }
-        onAppend(entry)
         return entry
     }
 }
