@@ -1,16 +1,26 @@
 package com.ntpx.alchemist
 
-import android.app.Activity
 import android.os.Bundle
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import com.ntpx.alchemist.ui.AlchemistApp
+import com.ntpx.alchemist.ui.StartupScreen
+import com.ntpx.alchemist.ui.theme.AlchemistTheme
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContentView(TextView(this).apply {
-            text = "NTPX AI Alchemist\nAndroid foundation v0.1.0\nAI runtime not yet connected"
-            textSize = 20f
-            setPadding(32, 48, 32, 32)
-        })
+        val app = application as AlchemistApplication
+        setContent {
+            AlchemistTheme {
+                val container by produceState<AppContainer?>(initialValue = null) { value = app.awaitContainer() }
+                val ready = container
+                if (ready == null) StartupScreen() else AlchemistApp(ready)
+            }
+        }
     }
 }

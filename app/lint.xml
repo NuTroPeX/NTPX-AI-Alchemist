@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Adaptive icons must live in -v26 for aapt2 to resolve them; minSdk is 26 so this is intentional. -->
+    <issue id="ObsoleteSdkInt">
+        <ignore path="src/main/res/mipmap-anydpi-v26" />
+    </issue>
+    <!-- Versions are pinned to the AGP 8.7 / compileSdk 35 line; upgrades are a deliberate, separate change. -->
+    <issue id="GradleDependency" severity="informational" />
+    <issue id="AndroidGradlePluginVersion" severity="informational" />
+</lint>

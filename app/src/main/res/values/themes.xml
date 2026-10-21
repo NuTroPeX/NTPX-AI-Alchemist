@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ntpx_void">#FF06070F</color>
+    <color name="ntpx_cyan">#FF22D3EE</color>
+
+    <style name="Theme.Alchemist" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ntpx_void</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:colorAccent">@color/ntpx_cyan</item>
+    </style>
+</resources>
