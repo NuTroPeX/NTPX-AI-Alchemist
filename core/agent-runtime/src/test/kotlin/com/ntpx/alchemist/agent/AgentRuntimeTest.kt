@@ -164,6 +164,17 @@ class AgentRuntimeTest {
     }
 
     @Test
+    fun stoppingOnTheFinishedEventKeepsOneTerminalRecord() = runTest {
+        val h = harness()
+        val task = AgentTask("t", "agent", "g", listOf(AgentStep.Recall("x")))
+        // Started, StepStarted, StepSucceeded, Finished: take(4) cancels while receiving Finished.
+        h.runtime.run(task).take(4).toList()
+        val types = h.audit.entries.value.map { it.type }
+        assertEquals(AuditType.TASK_FINISHED, types.last())
+        assertTrue(AuditType.TASK_CANCELLED !in types)
+    }
+
+    @Test
     fun cancellingCollectorIsAudited() = runTest {
         val h = harness()
         h.runtime.run(planner.plan("agent", "goal")).take(2).toList()

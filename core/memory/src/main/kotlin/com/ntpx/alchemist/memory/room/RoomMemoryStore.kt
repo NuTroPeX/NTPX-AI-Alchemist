@@ -186,7 +186,8 @@ class RoomMemoryStore private constructor(
 
     override suspend fun update(entry: MemoryEntry): Boolean {
         val existing = dao.get(entry.id) ?: return false
-        return dao.update(MemoryRow.from(entry.copy(createdAt = existing.createdAt, updatedAt = clock()))) > 0
+        val normalised = entry.copy(tags = normaliseTags(entry.tags), createdAt = existing.createdAt, updatedAt = clock())
+        return dao.update(MemoryRow.from(normalised)) > 0
     }
 
     /**

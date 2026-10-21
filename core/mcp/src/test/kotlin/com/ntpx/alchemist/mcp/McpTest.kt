@@ -152,6 +152,7 @@ class McpTest {
             """{"jsonrpc":"2.0","id":1,"error":"boom"}""",
             """{"jsonrpc":"2.0","id":1,"method":5}""",
             """{"jsonrpc":"2.0","id":true,"method":"ping"}""",
+            """{"jsonrpc":"2.0","id":null,"method":"ping"}""",
             """{"jsonrpc":"2.0","id":1,"method":{}}""",
             """{"jsonrpc":"2.0","id":1}""",
             """[1,2,3]""",

@@ -117,19 +117,14 @@ class InMemoryMemoryStore(
 
     override suspend fun get(id: String): MemoryEntry? = state.value.firstOrNull { it.id == id }
 
+    /** Result comes from the compare-and-set that actually committed. */
     override suspend fun update(entry: MemoryEntry): Boolean {
-        var found = false
-        state.update { list ->
-            list.map {
-                if (it.id == entry.id) {
-                    found = true
-                    entry.copy(createdAt = it.createdAt, updatedAt = clock())
-                } else {
-                    it
-                }
-            }
+        while (true) {
+            val list = state.value
+            val existing = list.firstOrNull { it.id == entry.id } ?: return false
+            val updated = entry.copy(tags = normaliseTags(entry.tags), createdAt = existing.createdAt, updatedAt = clock())
+            if (state.compareAndSet(list, list.map { if (it.id == entry.id) updated else it })) return true
         }
-        return found
     }
 
     override suspend fun search(query: String, namespace: String?, limit: Int): List<ScoredMemory> =

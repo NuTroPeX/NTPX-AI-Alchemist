@@ -71,7 +71,8 @@ object MemoryExportCodec {
 
     /**
      * Streams an export from [reader], handing entries to [onBatch] in batches of [batchSize].
-     * Validates every line; throws [MemoryImportException] on the first problem.
+     * Validates every line; throws [MemoryImportException] on the first problem. Memory use is one
+     * batch regardless of file size; a repeated id simply replaces the earlier row on import.
      * Run it once with a no-op [onBatch] to validate before importing, so a bad file changes nothing.
      */
     suspend fun read(
@@ -93,7 +94,6 @@ object MemoryExportCodec {
         if (header.version != VERSION) throw MemoryImportException("Unsupported export version ${header.version}")
 
         val batch = ArrayList<MemoryEntry>(batchSize)
-        val seen = HashSet<String>()
         var count = 0
         var lineNumber = 1
         while (true) {
@@ -107,7 +107,6 @@ object MemoryExportCodec {
             } catch (e: IllegalArgumentException) {
                 throw MemoryImportException("Line $lineNumber: ${e.message}")
             }
-            if (!seen.add(entry.id)) throw MemoryImportException("Line $lineNumber repeats id ${entry.id}")
             batch += entry
             count++
             if (batch.size == batchSize) {

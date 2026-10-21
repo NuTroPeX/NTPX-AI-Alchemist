@@ -32,7 +32,7 @@ class AgentRuntime(
     private val memory: MemoryPort,
 ) {
     fun run(task: AgentTask): Flow<TaskEvent> = flow {
-        val outputs = mutableListOf<String>()
+        val run = RunState()
         audit.append(task.agentId, task.id, AuditType.TASK_STARTED, task.goal)
         // Everything after TASK_STARTED, including the first emit, is inside the try so that a
         // collector cancelling at any point still leaves a terminal TASK_CANCELLED record.
@@ -40,7 +40,7 @@ class AgentRuntime(
             emit(TaskEvent.Started(task.id, task.goal, task.steps.size))
 
             if (task.steps.size > task.budget.maxSteps) {
-                fail(task, -1, "Plan has ${task.steps.size} steps; budget allows ${task.budget.maxSteps}", TaskStatus.FAILED, outputs)
+                fail(task, -1, "Plan has ${task.steps.size} steps; budget allows ${task.budget.maxSteps}", TaskStatus.FAILED, run)
                 return@flow
             }
 
@@ -59,36 +59,42 @@ class AgentRuntime(
                                 return@withTimeout StepOutcome.Denied(permission)
                             }
                         }
-                        StepOutcome.Ok(execute(step, route, task.goal, outputs))
+                        StepOutcome.Ok(execute(step, route, task.goal, run.outputs))
                     }
                 } catch (e: TimeoutCancellationException) {
-                    fail(task, index, "Timed out after ${task.budget.stepTimeoutMillis} ms", TaskStatus.TIMED_OUT, outputs)
+                    fail(task, index, "Timed out after ${task.budget.stepTimeoutMillis} ms", TaskStatus.TIMED_OUT, run)
                     return@flow
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    fail(task, index, e.message ?: e::class.simpleName.orEmpty(), TaskStatus.FAILED, outputs)
+                    fail(task, index, e.message ?: e::class.simpleName.orEmpty(), TaskStatus.FAILED, run)
                     return@flow
                 }
 
                 val output = when (outcome) {
                     is StepOutcome.Denied -> {
                         emit(TaskEvent.StepDenied(task.id, index, outcome.permission))
-                        finish(task, TaskStatus.DENIED, outputs)
+                        finish(task, TaskStatus.DENIED, run)
                         return@flow
                     }
                     is StepOutcome.Ok -> outcome.output
                 }
 
-                outputs += output
+                run.outputs += output
                 audit.append(task.agentId, task.id, AuditType.STEP_SUCCEEDED, "#$index ${preview(output)}")
                 emit(TaskEvent.StepSucceeded(task.id, index, output))
             }
-            finish(task, TaskStatus.COMPLETED, outputs)
+            finish(task, TaskStatus.COMPLETED, run)
         } catch (e: CancellationException) {
-            audit.append(task.agentId, task.id, AuditType.TASK_CANCELLED, "after ${outputs.size} step(s)")
+            // A collector that stops while receiving Finished must not add a contradictory terminal record.
+            if (!run.finished) audit.append(task.agentId, task.id, AuditType.TASK_CANCELLED, "after ${run.outputs.size} step(s)")
             throw e
         }
+    }
+
+    private class RunState {
+        val outputs = mutableListOf<String>()
+        var finished = false
     }
 
     private sealed interface StepOutcome {
@@ -121,20 +127,21 @@ class AgentRuntime(
         index: Int,
         error: String,
         status: TaskStatus,
-        outputs: List<String>,
+        run: RunState,
     ) {
         audit.append(task.agentId, task.id, AuditType.STEP_FAILED, "#$index $error")
         emit(TaskEvent.StepFailed(task.id, index, error))
-        finish(task, status, outputs)
+        finish(task, status, run)
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<TaskEvent>.finish(
         task: AgentTask,
         status: TaskStatus,
-        outputs: List<String>,
+        run: RunState,
     ) {
         audit.append(task.agentId, task.id, AuditType.TASK_FINISHED, status.name)
-        emit(TaskEvent.Finished(task.id, status, outputs.toList()))
+        run.finished = true
+        emit(TaskEvent.Finished(task.id, status, run.outputs.toList()))
     }
 
     private fun preview(text: String): String = text.replace('\n', ' ').let { if (it.length > 120) it.take(117) + "..." else it }

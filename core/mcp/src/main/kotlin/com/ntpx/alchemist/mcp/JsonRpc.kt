@@ -94,6 +94,9 @@ object JsonRpcCodec {
         val params = obj["params"]?.let {
             it as? JsonObject ?: throw McpProtocolException(JsonRpcError(JsonRpcError.INVALID_PARAMS, "params must be an object"))
         }
+        // MCP forbids null request ids. A present-but-null id still marks a request, so answer it
+        // with an error rather than treating it as a notification and staying silent.
+        if (method != null && obj["id"] is JsonNull) throw invalidRequest("Request id must not be null")
         return when {
             method != null && id != null -> JsonRpcRequest(id, method, params)
             method != null -> JsonRpcNotification(method, params)

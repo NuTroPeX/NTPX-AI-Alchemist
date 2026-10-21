@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -172,8 +173,9 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
     val state by vm.state.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var draft by remember { mutableStateOf("") }
-    var tags by remember { mutableStateOf("") }
+    // Saveable: the draft survives rotation and other configuration changes.
+    var draft by rememberSaveable { mutableStateOf("") }
+    var tags by rememberSaveable { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(MemoryViewModel.EXPORT_MIME_TYPE)) { uri ->
         if (uri != null) vm.exportTo(context.applicationContext, uri)
@@ -202,9 +204,12 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
                 OutlinedTextField(tags, { tags = it }, placeholder = { Text("tags, comma separated") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(
                     onClick = {
-                        vm.add(draft, tags) {
-                            draft = ""
-                            tags = ""
+                        val submittedDraft = draft
+                        val submittedTags = tags
+                        vm.add(submittedDraft, submittedTags) {
+                            // Only clear what was saved; keep anything typed while the insert ran.
+                            if (draft == submittedDraft) draft = ""
+                            if (tags == submittedTags) tags = ""
                         }
                     },
                     enabled = draft.isNotBlank(),

@@ -58,6 +58,14 @@ class MemoryStoreTest {
     }
 
     @Test
+    fun updateNormalisesTags() = runTest {
+        val s = store()
+        val e = s.put("x")
+        s.update(e.copy(tags = setOf("Agent-Run", "agent-run")))
+        assertEquals(setOf("agent-run"), s.get(e.id)!!.tags)
+    }
+
+    @Test
     fun deleteReportsResult() = runTest {
         val s = store()
         val e = s.put("bye")
@@ -126,7 +134,7 @@ class MemoryStoreTest {
         val good = """{"id":"a","namespace":"default","content":"hi","createdAt":1}"""
         suspend fun fails(text: String) = MemoryExportCodec.decode(text).isFailure
         assertTrue(fails("$header\n{oops}"))
-        assertTrue(fails("$header\n$good\n$good"))
+        assertEquals(2, MemoryExportCodec.decode("$header\n$good\n$good").getOrThrow().entries.size) // upserts, last wins
         assertTrue(fails("""{"format":"ntpx-alchemist-memory","version":1,"exportedAt":1}"""))
         assertTrue(fails(""))
         assertTrue(fails(header + "\n" + "x".repeat(MemoryExportCodec.MAX_LINE_CHARS + 1)))

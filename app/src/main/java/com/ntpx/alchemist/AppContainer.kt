@@ -31,7 +31,6 @@ import com.ntpx.alchemist.registry.ModelRouter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.Executors
@@ -101,8 +100,16 @@ class AppContainer(context: Context) {
 
     init {
         appScope.launch { runCatching { tools.refresh() } }
-        appScope.launch { grants.overrides.drop(1).collect(settings::saveGrants) }
-        ioWriter.execute { runCatching { journal.compact() } }
+        // Save every value, including the first: a change made before collection starts would
+        // otherwise be the replayed value and be dropped. Re-saving loaded grants is harmless.
+        appScope.launch { grants.overrides.collect(settings::saveGrants) }
+        // Never compact a journal that failed verification: that would write a fresh checkpoint for
+        // the tampered head and erase the evidence on the next launch.
+        if (restoredChain == ChainVerification.Valid && corruptJournalLines == 0) {
+            ioWriter.execute { runCatching { journal.compact() } }
+        } else {
+            journal.compactionAllowed = false
+        }
     }
 
     fun recordSettingsChange(detail: String) {

@@ -13,6 +13,10 @@ import java.io.File
  */
 class AuditJournal(private val file: File, private val maxLines: Int = 5_000) {
 
+    /** Set false when the loaded chain failed verification, so no compaction can re-anchor a tampered head. */
+    @Volatile
+    var compactionAllowed: Boolean = true
+
     /** [anchor] is where [entries] must start: genesis, or the checkpoint written by the last compaction. */
     data class Loaded(val entries: List<AuditEntry>, val corruptLines: Int, val anchor: ChainAnchor)
 
@@ -67,7 +71,7 @@ class AuditJournal(private val file: File, private val maxLines: Int = 5_000) {
         file.parentFile?.mkdirs()
         file.appendText(encode(entry) + "\n")
         lineCount++
-        if (lineCount > maxLines + slack) compact()
+        if (compactionAllowed && lineCount > maxLines + slack) compact()
     }
 
     /** Rewrites the file keeping only the newest [maxLines] entries. Call off the main thread. */

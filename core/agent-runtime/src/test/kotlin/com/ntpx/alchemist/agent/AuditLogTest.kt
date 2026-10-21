@@ -103,6 +103,12 @@ class AuditLogTest {
     }
 
     @Test
+    fun emptyLogIsValidOnlyFromGenesis() {
+        assertEquals(ChainVerification.Valid, AuditLog.verifyChain(emptyList(), ChainAnchor.GENESIS))
+        assertTrue(AuditLog.verifyChain(emptyList(), ChainAnchor(42, AuditHashing.GENESIS)) is ChainVerification.Broken)
+    }
+
+    @Test
     fun ownTrimMovesAnchorAndStaysValid() {
         val log = log(capacity = 3)
         repeat(10) { log.append("a", "t", AuditType.STEP_STARTED, "s$it") }

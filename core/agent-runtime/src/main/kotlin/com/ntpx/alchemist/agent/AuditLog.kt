@@ -90,7 +90,13 @@ interface AuditLog {
     companion object {
         /** Verifies links and hashes; with [anchor], also that the chain starts exactly there. */
         fun verifyChain(entries: List<AuditEntry>, anchor: ChainAnchor? = null): ChainVerification {
-            val first = entries.firstOrNull() ?: return ChainVerification.Valid
+            // An empty log is only consistent with a genesis start; an empty log under a later
+            // checkpoint means every retained record was removed.
+            val first = entries.firstOrNull() ?: return if (anchor == null || anchor == ChainAnchor.GENESIS) {
+                ChainVerification.Valid
+            } else {
+                ChainVerification.Broken(anchor.sequence, "All records after checkpoint #${anchor.sequence} are missing")
+            }
             if (anchor != null && ChainAnchor.of(first) != anchor) {
                 return ChainVerification.Broken(first.sequence, "Chain does not start at its recorded anchor #${anchor.sequence}")
             }
