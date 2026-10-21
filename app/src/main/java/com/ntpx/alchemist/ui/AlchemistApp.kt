@@ -112,9 +112,10 @@ fun AlchemistApp(container: AppContainer) {
 @Composable
 private fun ConsentDialog(container: AppContainer) {
     val pending by container.consent.pending.collectAsStateWithLifecycle()
-    val request = pending?.request ?: return
+    val current = pending ?: return
+    val request = current.request
     AlertDialog(
-        onDismissRequest = { container.consent.answer(ConsentDecision.DENY) },
+        onDismissRequest = { container.consent.answer(current, ConsentDecision.DENY) },
         title = { Text("Allow ${request.permission.label}?") },
         text = {
             Column {
@@ -124,12 +125,12 @@ private fun ConsentDialog(container: AppContainer) {
         },
         confirmButton = {
             Column {
-                TextButton(onClick = { container.consent.answer(ConsentDecision.ALLOW_ONCE) }) { Text("ALLOW ONCE") }
-                TextButton(onClick = { container.consent.answer(ConsentDecision.ALLOW_ALWAYS) }) { Text("ALWAYS ALLOW") }
+                TextButton(onClick = { container.consent.answer(current, ConsentDecision.ALLOW_ONCE) }) { Text("ALLOW ONCE") }
+                TextButton(onClick = { container.consent.answer(current, ConsentDecision.ALLOW_ALWAYS) }) { Text("ALWAYS ALLOW") }
             }
         },
         dismissButton = {
-            TextButton(onClick = { container.consent.answer(ConsentDecision.DENY) }) { Text("DENY", color = Ntpx.Danger) }
+            TextButton(onClick = { container.consent.answer(current, ConsentDecision.DENY) }) { Text("DENY", color = Ntpx.Danger) }
         },
     )
 }

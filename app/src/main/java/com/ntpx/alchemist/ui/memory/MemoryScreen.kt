@@ -45,6 +45,7 @@ import com.ntpx.alchemist.ui.components.GlassCard
 import com.ntpx.alchemist.ui.components.SectionHeader
 import com.ntpx.alchemist.ui.theme.Ntpx
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -72,13 +73,22 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
         MemoryUiState(entries, q, r)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MemoryUiState())
 
+    private var searchJob: Job? = null
+
     fun setQuery(text: String) {
         query.value = text
+        searchJob?.cancel()
         if (text.isBlank()) {
             results.value = null
             return
         }
-        viewModelScope.launch { results.value = store.search(text, limit = 50).map { it.entry } }
+        searchJob = viewModelScope.launch { publishSearch(text) }
+    }
+
+    /** Publishes results only if [text] is still the visible query, so a slow older search can't win. */
+    private suspend fun publishSearch(text: String) {
+        val found = store.search(text, limit = 50).map { it.entry }
+        if (query.value == text) results.value = found
     }
 
     /** [onSaved] runs only after the insert succeeds, so a rejected draft stays in the editor. */
@@ -106,6 +116,7 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
     }
 
     fun clearAll() = viewModelScope.launch {
+        searchJob?.cancel()
         val removed = store.clear()
         results.value = null
         query.value = ""
@@ -114,14 +125,14 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
 
     /** Writes every entry to a user-chosen document (streamed to a file, so size is not bound by Binder limits). */
     fun exportTo(context: Context, uri: Uri) = viewModelScope.launch {
-        val entries = store.all()
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
-                val json = MemoryExportCodec.encode(entries, System.currentTimeMillis())
-                (context.contentResolver.openOutputStream(uri, "wt") ?: error("Could not open file")).bufferedWriter().use { it.write(json) }
+                (context.contentResolver.openOutputStream(uri, "wt") ?: error("Could not open file")).bufferedWriter().use { writer ->
+                    MemoryExportCodec.write(writer, System.currentTimeMillis(), store.exportPager)
+                }
             }
         }
-        messages.value = outcome.fold({ "Exported ${entries.size} entries" }, { "Export failed: ${it.message}" })
+        messages.value = outcome.fold({ "Exported $it entries" }, { "Export failed: ${it.message}" })
     }
 
     fun import(context: Context, uri: Uri) = viewModelScope.launch {
@@ -146,7 +157,7 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
 
     private suspend fun refreshSearch() {
         val q = query.value
-        if (q.isNotBlank()) results.value = store.search(q, limit = 50).map { it.entry }
+        if (q.isNotBlank()) publishSearch(q)
     }
 
     companion object {

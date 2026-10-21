@@ -58,7 +58,7 @@ interface MemoryStore {
 
 /** Normalises tags so "Agent Run" and "agent-run" don't become two tags. */
 internal fun normaliseTags(tags: Set<String>): Set<String> =
-    tags.map { it.trim().replace(Regex("\\s+"), "-") }.filter { it.isNotEmpty() }.toSet()
+    tags.map { it.trim().replace(Regex("\\s+"), "-").lowercase() }.filter { it.isNotEmpty() }.toSet()
 
 class InMemoryMemoryStore(
     private val clock: () -> Long = System::currentTimeMillis,

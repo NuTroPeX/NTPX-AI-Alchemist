@@ -18,7 +18,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class ConsentBroker(private val timeoutMillis: Long = 60_000) : ConsentProvider {
 
-    data class Pending(val request: ConsentRequest, internal val answer: CompletableDeferred<ConsentDecision>)
+    /** Identity matters: answers are accepted only for the exact instance the UI displayed. */
+    class Pending(val request: ConsentRequest, internal val answer: CompletableDeferred<ConsentDecision>)
 
     private val lock = Mutex()
     private val state = MutableStateFlow<Pending?>(null)
@@ -34,7 +35,12 @@ class ConsentBroker(private val timeoutMillis: Long = 60_000) : ConsentProvider 
         }
     }
 
-    fun answer(decision: ConsentDecision) {
-        state.value?.answer?.complete(decision)
+    /**
+     * Answers [pending] only if it is still the current request. A late or repeated tap from a
+     * dialog that has already been replaced is ignored, so it can never approve the next prompt.
+     */
+    fun answer(pending: Pending, decision: ConsentDecision): Boolean {
+        if (state.value !== pending) return false
+        return pending.answer.complete(decision)
     }
 }

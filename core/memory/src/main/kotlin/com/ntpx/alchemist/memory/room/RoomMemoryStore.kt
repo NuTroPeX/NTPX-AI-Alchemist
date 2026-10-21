@@ -70,6 +70,16 @@ internal interface MemoryDao {
     @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
     suspend fun recentInNamespace(namespace: String, limit: Int): List<MemoryRow>
 
+    @Query("SELECT * FROM memory ORDER BY created_at ASC, id ASC LIMIT :limit")
+    suspend fun firstPage(limit: Int): List<MemoryRow>
+
+    /** Keyset pagination: stable under concurrent inserts, unlike OFFSET. */
+    @Query(
+        "SELECT * FROM memory WHERE created_at > :createdAt OR (created_at = :createdAt AND id > :id) " +
+            "ORDER BY created_at ASC, id ASC LIMIT :limit",
+    )
+    suspend fun pageAfter(createdAt: Long, id: String, limit: Int): List<MemoryRow>
+
     @Query("SELECT * FROM memory WHERE id = :id")
     suspend fun get(id: String): MemoryRow?
 
@@ -134,6 +144,11 @@ class RoomMemoryStore private constructor(
 
     override suspend fun all(namespace: String?): List<MemoryEntry> =
         (if (namespace == null) dao.all() else dao.inNamespace(namespace)).map(MemoryRow::toEntry)
+
+    /** Pages every entry oldest-first for streaming export. */
+    val exportPager = com.ntpx.alchemist.memory.MemoryPager { after, limit ->
+        (if (after == null) dao.firstPage(limit) else dao.pageAfter(after.createdAt, after.id, limit)).map(MemoryRow::toEntry)
+    }
 
     /** Restores entries from an export, replacing any with the same id. */
     suspend fun import(entries: List<MemoryEntry>): Int {

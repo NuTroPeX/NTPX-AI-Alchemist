@@ -19,9 +19,9 @@ class MemoryStoreTest {
 
     @Test
     fun putTrimsAndNormalisesTags() = runTest {
-        val entry = store().put("  remember the forge  ", tags = setOf(" Agent Run ", "x"))
+        val entry = store().put("  remember the forge  ", tags = setOf(" Agent Run ", "agent-run", "X"))
         assertEquals("remember the forge", entry.content)
-        assertEquals(setOf("Agent-Run", "x"), entry.tags)
+        assertEquals(setOf("agent-run", "x"), entry.tags)
     }
 
     @Test
@@ -89,8 +89,34 @@ class MemoryStoreTest {
         s.put("two", pinned = true)
         val text = MemoryExportCodec.encode(s.all(), exportedAt = 42)
         val decoded = MemoryExportCodec.decode(text).getOrThrow()
-        assertEquals(s.all(), decoded.entries)
+        assertEquals(s.all().sortedWith(MemoryExportCodec.EXPORT_ORDER), decoded.entries)
         assertTrue(MemoryExportCodec.decode("""{"format":"other","version":1,"exportedAt":0,"entries":[]}""").isFailure)
         assertTrue(MemoryExportCodec.decode("garbage").isFailure)
+    }
+
+    @Test
+    fun streamingExportPagesEverythingAndDecodes() = runTest {
+        val s = store()
+        repeat(450) { s.put("entry $it", tags = setOf("t$it")) }
+        val all = s.all().sortedWith(MemoryExportCodec.EXPORT_ORDER)
+        var pagesServed = 0
+        val pager = MemoryPager { after, limit ->
+            pagesServed++
+            val start = if (after == null) 0 else all.indexOfFirst { it.id == after.id } + 1
+            all.subList(start, minOf(all.size, start + limit))
+        }
+        val out = StringBuilder()
+        val count = MemoryExportCodec.write(out, exportedAt = 7, pager = pager, pageSize = 100)
+        assertEquals(450, count)
+        assertEquals(5, pagesServed)
+        val decoded = MemoryExportCodec.decode(out.toString()).getOrThrow()
+        assertEquals(all, decoded.entries)
+        assertEquals(7L, decoded.exportedAt)
+    }
+
+    @Test
+    fun emptyExportIsValid() = runTest {
+        val decoded = MemoryExportCodec.decode(MemoryExportCodec.encode(emptyList(), 1)).getOrThrow()
+        assertTrue(decoded.entries.isEmpty())
     }
 }

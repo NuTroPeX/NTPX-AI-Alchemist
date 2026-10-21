@@ -146,6 +146,9 @@ class McpTest {
             """{"jsonrpc":{},"id":1,"method":"ping"}""",
             """{"jsonrpc":"2.0","id":{},"method":"ping"}""",
             """{"jsonrpc":"2.0","id":1,"error":"boom"}""",
+            """{"jsonrpc":"2.0","id":1,"method":5}""",
+            """{"jsonrpc":"2.0","id":1,"method":{}}""",
+            """{"jsonrpc":"2.0","id":1}""",
             """[1,2,3]""",
         ).forEach { raw ->
             val response = server.handle(raw)

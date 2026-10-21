@@ -82,7 +82,7 @@ class WiringTest {
 
         val pending = broker.pending.filterNotNull().first()
         assertEquals(Permission.INVOKE_TOOL, pending.request.permission)
-        broker.answer(ConsentDecision.ALLOW_ONCE)
+        broker.answer(pending, ConsentDecision.ALLOW_ONCE)
 
         val result = events.await()
         val finished = result.last() as TaskEvent.Finished

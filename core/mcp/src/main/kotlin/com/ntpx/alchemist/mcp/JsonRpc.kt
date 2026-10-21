@@ -82,14 +82,18 @@ object JsonRpcCodec {
             is JsonPrimitive -> raw
             else -> throw invalidRequest("id must be a string or number")
         }
-        val method = (obj["method"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        val method = when (val raw = obj["method"]) {
+            null -> null
+            is JsonPrimitive -> raw.takeIf { it.isString }?.content ?: throw invalidRequest("method must be a string")
+            else -> throw invalidRequest("method must be a string")
+        }
         val params = obj["params"]?.let {
             it as? JsonObject ?: throw McpProtocolException(JsonRpcError(JsonRpcError.INVALID_PARAMS, "params must be an object"))
         }
         return when {
             method != null && id != null -> JsonRpcRequest(id, method, params)
             method != null -> JsonRpcNotification(method, params)
-            id != null || "result" in obj || "error" in obj -> {
+            "result" in obj || "error" in obj -> {
                 val error = when (val raw = obj["error"]) {
                     null, JsonNull -> null
                     is JsonObject -> JsonRpcError(
@@ -101,7 +105,7 @@ object JsonRpcCodec {
                 }
                 JsonRpcResponse(id ?: JsonNull, obj["result"], error)
             }
-            else -> throw invalidRequest("Missing method and id")
+            else -> throw invalidRequest("Expected a request (method), or a response (result or error)")
         }
     }
 
