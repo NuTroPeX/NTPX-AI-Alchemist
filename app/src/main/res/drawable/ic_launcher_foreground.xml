@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Alchemical sigil: circle, inscribed triangle and core node. 108dp canvas, art inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,25 A29,29 0 1,1 53.99,25 Z"
+        android:strokeWidth="3"
+        android:strokeColor="#FF8B5CF6"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M54,32 L74,68 L34,68 Z"
+        android:strokeWidth="3.5"
+        android:strokeLineJoin="round"
+        android:strokeColor="#FF22D3EE"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M40,56 L68,56"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFE879F9" />
+    <path
+        android:pathData="M54,47 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0"
+        android:fillColor="#FFE879F9" />
+</vector>

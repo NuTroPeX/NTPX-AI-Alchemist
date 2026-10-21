@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "ntpx/echo-local",
+      "displayName": "Echo (pipeline test)",
+      "provider": "NTPX",
+      "placement": "on_device",
+      "capabilities": ["chat", "text_generation"],
+      "contextWindow": 4096,
+      "sizeBytes": 0,
+      "backend": "echo",
+      "availability": "ready",
+      "description": "Deterministic on-device backend that reflects the prompt. Used to verify routing, permissions, tools and memory end to end. Performs no inference."
+    },
+    {
+      "id": "google/gemma-3-1b-it",
+      "displayName": "Gemma 3 1B Instruct",
+      "provider": "Google",
+      "placement": "on_device",
+      "capabilities": ["chat", "text_generation"],
+      "contextWindow": 32768,
+      "sizeBytes": 555000000,
+      "backend": "mediapipe-llm",
+      "availability": "not_installed",
+      "description": "Planned on-device chat model via MediaPipe LLM Inference. Backend not bundled in v0.2."
+    },
+    {
+      "id": "meta/llama-3.2-3b-instruct-q4",
+      "displayName": "Llama 3.2 3B Instruct (Q4)",
+      "provider": "Meta",
+      "placement": "on_device",
+      "capabilities": ["chat", "text_generation", "tool_use"],
+      "contextWindow": 131072,
+      "sizeBytes": 2020000000,
+      "backend": "llama.cpp",
+      "availability": "not_installed",
+      "description": "Planned GGUF model via llama.cpp JNI. Backend not bundled in v0.2."
+    },
+    {
+      "id": "local/nomic-embed-text",
+      "displayName": "Nomic Embed Text",
+      "provider": "Nomic",
+      "placement": "on_device",
+      "capabilities": ["embeddings"],
+      "contextWindow": 8192,
+      "sizeBytes": 274000000,
+      "backend": "onnx",
+      "availability": "not_installed",
+      "description": "Planned embeddings model for semantic memory search. Backend not bundled in v0.2."
+    },
+    {
+      "id": "lan/ollama",
+      "displayName": "Ollama on local network",
+      "provider": "Ollama",
+      "placement": "local_network",
+      "capabilities": ["chat", "text_generation", "embeddings", "tool_use"],
+      "backend": "ollama",
+      "availability": "unavailable",
+      "description": "Planned adapter for an Ollama server on your PC (Windows phase). Requires the network permission in a later release."
+    },
+    {
+      "id": "anthropic/claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6",
+      "provider": "Anthropic",
+      "placement": "cloud",
+      "capabilities": ["chat", "text_generation", "vision", "tool_use"],
+      "contextWindow": 200000,
+      "backend": "anthropic",
+      "availability": "requires_credentials",
+      "description": "Planned opt-in cloud adapter. Never routed unless cloud models are enabled in Settings and a key is configured."
+    }
+  ]
+}

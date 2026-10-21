@@ -1,0 +1,149 @@
+package com.ntpx.alchemist.memory.room
+
+import android.content.Context
+import androidx.room.Dao
+import androidx.room.Database
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.PrimaryKey
+import androidx.room.Query
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.Update
+import com.ntpx.alchemist.memory.MemoryEntry
+import com.ntpx.alchemist.memory.MemoryRanker
+import com.ntpx.alchemist.memory.MemoryStore
+import com.ntpx.alchemist.memory.ScoredMemory
+import com.ntpx.alchemist.memory.normaliseTags
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import java.util.UUID
+
+@Entity(tableName = "memory", indices = [Index("namespace"), Index("updated_at")])
+internal data class MemoryRow(
+    @PrimaryKey val id: String,
+    val namespace: String,
+    val content: String,
+    /** Tags stored newline-separated; tag syntax forbids newlines. */
+    val tags: String,
+    @androidx.room.ColumnInfo(name = "created_at") val createdAt: Long,
+    @androidx.room.ColumnInfo(name = "updated_at") val updatedAt: Long,
+    val pinned: Boolean,
+) {
+    fun toEntry() = MemoryEntry(
+        id = id,
+        namespace = namespace,
+        content = content,
+        tags = tags.split('\n').filter { it.isNotEmpty() }.toSet(),
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+        pinned = pinned,
+    )
+
+    companion object {
+        fun from(entry: MemoryEntry) = MemoryRow(
+            entry.id, entry.namespace, entry.content, entry.tags.sorted().joinToString("\n"),
+            entry.createdAt, entry.updatedAt, entry.pinned,
+        )
+    }
+}
+
+@Dao
+internal interface MemoryDao {
+    @Query("SELECT * FROM memory ORDER BY pinned DESC, updated_at DESC, id ASC")
+    fun observeAll(): Flow<List<MemoryRow>>
+
+    @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC")
+    fun observeNamespace(namespace: String): Flow<List<MemoryRow>>
+
+    @Query("SELECT * FROM memory ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
+    suspend fun all(limit: Int): List<MemoryRow>
+
+    @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
+    suspend fun inNamespace(namespace: String, limit: Int): List<MemoryRow>
+
+    @Query("SELECT * FROM memory WHERE id = :id")
+    suspend fun get(id: String): MemoryRow?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(row: MemoryRow)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(rows: List<MemoryRow>)
+
+    @Update
+    suspend fun update(row: MemoryRow): Int
+
+    @Query("DELETE FROM memory WHERE id = :id")
+    suspend fun delete(id: String): Int
+
+    @Query("DELETE FROM memory")
+    suspend fun clearAll(): Int
+
+    @Query("DELETE FROM memory WHERE namespace = :namespace")
+    suspend fun clearNamespace(namespace: String): Int
+}
+
+@Database(entities = [MemoryRow::class], version = 1, exportSchema = true)
+internal abstract class MemoryDatabase : RoomDatabase() {
+    abstract fun memoryDao(): MemoryDao
+}
+
+/** Room-backed [MemoryStore] in app-private storage (excluded from backup, see app manifest). */
+class RoomMemoryStore private constructor(
+    private val database: MemoryDatabase,
+    private val clock: () -> Long,
+    private val ranker: MemoryRanker,
+) : MemoryStore {
+    private val dao = database.memoryDao()
+
+    override fun observe(namespace: String?): Flow<List<MemoryEntry>> =
+        (if (namespace == null) dao.observeAll() else dao.observeNamespace(namespace)).map { rows -> rows.map(MemoryRow::toEntry) }
+
+    override suspend fun put(content: String, namespace: String, tags: Set<String>, pinned: Boolean): MemoryEntry {
+        val now = clock()
+        val entry = MemoryEntry(UUID.randomUUID().toString(), namespace, content.trim(), normaliseTags(tags), now, now, pinned)
+        dao.insert(MemoryRow.from(entry))
+        return entry
+    }
+
+    override suspend fun get(id: String): MemoryEntry? = dao.get(id)?.toEntry()
+
+    override suspend fun update(entry: MemoryEntry): Boolean {
+        val existing = dao.get(entry.id) ?: return false
+        return dao.update(MemoryRow.from(entry.copy(createdAt = existing.createdAt, updatedAt = clock()))) > 0
+    }
+
+    override suspend fun search(query: String, namespace: String?, limit: Int): List<ScoredMemory> =
+        ranker.rank(query, all(namespace), limit)
+
+    override suspend fun delete(id: String): Boolean = dao.delete(id) > 0
+
+    override suspend fun clear(namespace: String?): Int = if (namespace == null) dao.clearAll() else dao.clearNamespace(namespace)
+
+    override suspend fun all(namespace: String?): List<MemoryEntry> =
+        (if (namespace == null) dao.all(SCAN_LIMIT) else dao.inNamespace(namespace, SCAN_LIMIT)).map(MemoryRow::toEntry)
+
+    /** Restores entries from an export, replacing any with the same id. */
+    suspend fun import(entries: List<MemoryEntry>): Int {
+        dao.upsertAll(entries.map(MemoryRow::from))
+        return entries.size
+    }
+
+    fun close() = database.close()
+
+    companion object {
+        /** Upper bound on rows scanned per search; ample for a personal store. */
+        const val SCAN_LIMIT = 5_000
+        const val DATABASE_NAME = "alchemist-memory.db"
+
+        fun create(context: Context, clock: () -> Long = System::currentTimeMillis, ranker: MemoryRanker = MemoryRanker()): RoomMemoryStore =
+            RoomMemoryStore(
+                Room.databaseBuilder(context.applicationContext, MemoryDatabase::class.java, DATABASE_NAME).build(),
+                clock,
+                ranker,
+            )
+    }
+}

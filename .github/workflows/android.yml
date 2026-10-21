@@ -1,11 +1,14 @@
-name: Android foundation CI
+name: Android CI
 on:
   push:
-    paths: ['app/**', '*.gradle.kts', 'gradle.properties', '.github/workflows/android.yml']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,16 +19,29 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: gradle/actions/wrapper-validation@v4
       - uses: android-actions/setup-android@v3
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests (all modules)
+        run: ./gradlew --stacktrace test
+      - name: Lint
+        run: ./gradlew --stacktrace :app:lintDebug
+      - name: Assemble debug and release APKs
+        run: ./gradlew --stacktrace :app:assembleDebug :app:assembleRelease
+      - name: Verify APKs
+        run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          gradle-version: '8.9'
-      - name: Compile Android debug APK
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
-      - name: Verify APK
-        run: test -s app/build/outputs/apk/debug/app-debug.apk
+          name: test-and-lint-reports
+          path: |
+            **/build/reports/tests/
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: NTPX-AI-Alchemist-debug-APK
