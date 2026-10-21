@@ -142,6 +142,10 @@ class McpTest {
         assertEquals("2", sentences("Wait. What?!"))
         assertEquals("1", sentences("?! Really?"))
         assertEquals("0", sentences("..."))
+        // Linear: a long unpunctuated draft must not blow up (the old regex was quadratic here).
+        val started = System.nanoTime()
+        assertEquals(1, countSentences("word ".repeat(200_000)))
+        assertTrue("took too long", System.nanoTime() - started < 2_000_000_000L)
     }
 
     @Test
@@ -163,5 +167,25 @@ class McpTest {
             val code = (JsonRpcCodec.decode(response!!) as JsonRpcResponse).error?.code
             assertEquals("Unexpected code for $raw", JsonRpcError.INVALID_REQUEST, code)
         }
+    }
+
+    @Test
+    fun clientRejectsUnsupportedNegotiatedVersion() = runTest {
+        var notified = false
+        val transport = object : McpTransport {
+            override suspend fun request(message: String): String {
+                val id = (JsonRpcCodec.decode(message) as JsonRpcRequest).id
+                return """{"jsonrpc":"2.0","id":$id,"result":{"protocolVersion":"1999-01-01","capabilities":{},"serverInfo":{"name":"old","version":"0"}}}"""
+            }
+            override suspend fun notify(message: String) { notified = true }
+        }
+        val client = McpClient(transport, Implementation("c", "1"))
+        try {
+            client.initialize()
+            fail("expected version rejection")
+        } catch (_: McpProtocolException) {
+        }
+        assertFalse(notified)
+        assertNull(client.serverInfo)
     }
 }

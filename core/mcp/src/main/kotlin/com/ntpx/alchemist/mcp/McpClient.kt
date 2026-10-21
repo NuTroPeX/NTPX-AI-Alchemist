@@ -52,6 +52,12 @@ class McpClient(
                 },
             ),
         )
+        // Lifecycle: only proceed (and send initialized) if we speak the version the server chose.
+        if (result.protocolVersion != MCP_PROTOCOL_VERSION) {
+            throw McpProtocolException(
+                JsonRpcError(JsonRpcError.INVALID_REQUEST, "Unsupported MCP protocol version ${result.protocolVersion}; client supports $MCP_PROTOCOL_VERSION"),
+            )
+        }
         transport.notify(JsonRpcCodec.encode(JsonRpcNotification("notifications/initialized", null)))
         serverInfo = result
         result

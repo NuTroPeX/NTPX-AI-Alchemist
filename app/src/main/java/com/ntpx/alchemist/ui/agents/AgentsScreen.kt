@@ -48,6 +48,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 
 enum class StepState { PENDING, RUNNING, DONE, DENIED, FAILED }
@@ -101,7 +103,8 @@ class AgentsViewModel(
         job = viewModelScope.launch {
             refreshTools()
             try {
-                runtime.run(task).collect(::onEvent)
+                // Steps (tools, ranking, hashing) run on a background dispatcher; events land on Main.
+                runtime.run(task).flowOn(Dispatchers.Default).collect(::onEvent)
             } finally {
                 state.update { s ->
                     s.copy(

@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -48,6 +48,7 @@ data class SettingsUiState(
     val grants: Map<Permission, Grant> = emptyMap(),
     val audit: List<AuditEntry> = emptyList(),
     val chain: ChainVerification = ChainVerification.Valid,
+    val journalFailures: AppContainer.JournalFailures = AppContainer.JournalFailures(),
 )
 
 class SettingsViewModel(private val container: AppContainer, private val agentId: String) : ViewModel() {
@@ -56,12 +57,14 @@ class SettingsViewModel(private val container: AppContainer, private val agentId
         container.settings.settings,
         container.grants.overrides,
         container.audit.entries,
-    ) { settings, _, audit ->
+        container.journalWriteFailures,
+    ) { settings, _, audit, failures ->
         SettingsUiState(
             settings = settings,
             grants = container.grants.snapshot(agentId),
             audit = audit.takeLast(AUDIT_VISIBLE).asReversed(),
             chain = container.audit.verify(),
+            journalFailures = failures,
         )
     }
         // Re-verifying the chain hashes every retained entry; keep that off the main thread.
@@ -154,6 +157,14 @@ fun SettingsScreen(vm: SettingsViewModel, contentPadding: PaddingValues) {
             GlassCard {
                 SectionHeader("Audit log") { ChainBadge(state.chain) }
                 Text("${state.audit.size} most recent shown · hash-chained, append-only, stored on this device.", style = MaterialTheme.typography.bodyMedium, color = Ntpx.Muted)
+                if (state.journalFailures.count > 0) {
+                    Text(
+                        "${state.journalFailures.count} audit entr${if (state.journalFailures.count == 1) "y" else "ies"} could not be saved to storage" +
+                            (state.journalFailures.lastError?.let { " ($it)" } ?: "") + ". The on-disk journal is incomplete.",
+                        color = Ntpx.Danger,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 if (vm.restoredChain is ChainVerification.Broken || vm.corruptLines > 0) {
                     Text(
                         "The stored journal failed verification at startup" +
@@ -164,7 +175,8 @@ fun SettingsScreen(vm: SettingsViewModel, contentPadding: PaddingValues) {
                 }
             }
         }
-        items(state.audit, key = { it.sequence }) { AuditRow(it) }
+        // Keys must stay unique even for a corrupted journal with repeated sequence numbers.
+        itemsIndexed(state.audit, key = { index, entry -> "$index:${entry.hash}" }) { _, entry -> AuditRow(entry) }
         item {
             Text(
                 "NTPX AI Alchemist v${BuildInfo.VERSION} · offline build (no network permission)",

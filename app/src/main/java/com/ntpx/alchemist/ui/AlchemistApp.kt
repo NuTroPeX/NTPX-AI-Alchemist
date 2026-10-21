@@ -1,6 +1,9 @@
 package com.ntpx.alchemist.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Hub
@@ -133,4 +136,25 @@ private fun ConsentDialog(container: AppContainer) {
             TextButton(onClick = { container.consent.answer(current, ConsentDecision.DENY) }) { Text("DENY", color = Ntpx.Danger) }
         },
     )
+}
+
+/** Shown for the moment it takes to open storage and verify the audit journal off the main thread. */
+@Composable
+fun StartupScreen() {
+    NeonBackdrop {
+        androidx.compose.foundation.layout.Box(
+            androidx.compose.ui.Modifier.fillMaxSize(),
+            contentAlignment = androidx.compose.ui.Alignment.Center,
+        ) {
+            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                androidx.compose.material3.CircularProgressIndicator(color = Ntpx.Cyan)
+                Text(
+                    "Verifying audit journal…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Ntpx.Muted,
+                    modifier = androidx.compose.ui.Modifier.padding(top = 16.dp),
+                )
+            }
+        }
+    }
 }

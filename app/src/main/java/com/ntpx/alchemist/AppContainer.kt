@@ -31,6 +31,7 @@ import com.ntpx.alchemist.registry.ModelRouter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.Executors
@@ -67,8 +68,20 @@ class AppContainer(context: Context) {
         restored = restored.entries,
         capacity = journal.capacity,
         restoredAnchor = restored.anchor,
-        onAppend = { entry -> ioWriter.execute { runCatching { journal.append(entry) } } },
+        onAppend = { entry ->
+            ioWriter.execute {
+                runCatching { journal.append(entry) }.onFailure { e ->
+                    journalFailures.update { it.copy(count = it.count + 1, lastError = e.message ?: e::class.simpleName) }
+                }
+            }
+        },
     )
+
+    /** Audit entries that failed to persist this session; non-zero means the on-disk journal is incomplete. */
+    data class JournalFailures(val count: Int = 0, val lastError: String? = null)
+
+    private val journalFailures = kotlinx.coroutines.flow.MutableStateFlow(JournalFailures())
+    val journalWriteFailures: kotlinx.coroutines.flow.StateFlow<JournalFailures> = journalFailures
 
     /** Integrity of the journal as loaded at startup. */
     val restoredChain: ChainVerification = AuditLog.verifyChain(restored.entries, restored.anchor)

@@ -12,6 +12,25 @@ import java.time.format.DateTimeFormatter
 
 private fun JsonObject.string(name: String): String? = (this[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
+/**
+ * Sentences are runs containing at least one letter or digit, ended by '.', '!' or '?' (or by the
+ * end of text). Single linear pass, so cost stays O(n) for any input, punctuated or not.
+ */
+internal fun countSentences(text: String): Int {
+    var count = 0
+    var segmentHasContent = false
+    for (c in text) {
+        when {
+            c == '.' || c == '!' || c == '?' -> if (segmentHasContent) {
+                count++
+                segmentHasContent = false
+            }
+            c.isLetterOrDigit() -> segmentHasContent = true
+        }
+    }
+    return if (segmentHasContent) count + 1 else count
+}
+
 /** Word / character / line / sentence counts for a block of text. Offline, no permissions. */
 class TextStatsTool : ToolProvider {
     override val definition = ToolDefinition(
@@ -23,9 +42,7 @@ class TextStatsTool : ToolProvider {
     override suspend fun invoke(arguments: JsonObject): CallToolResult {
         val text = arguments.string("text") ?: return CallToolResult.error("'text' must be a string")
         val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
-        val terminated = Regex("[^.!?]*[\\p{L}\\p{N}][^.!?]*[.!?]+").findAll(text).toList()
-        val tail = text.substring(terminated.lastOrNull()?.range?.last?.plus(1) ?: 0)
-        val sentences = terminated.size + if (tail.any { it.isLetterOrDigit() }) 1 else 0
+        val sentences = countSentences(text)
         val lines = if (text.isEmpty()) 0 else text.lines().size
         return CallToolResult.text("words=$words chars=${text.length} lines=$lines sentences=$sentences")
     }
