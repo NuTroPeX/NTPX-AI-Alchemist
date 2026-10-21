@@ -189,4 +189,17 @@ class MemoryStoreTest {
         } catch (_: IllegalArgumentException) {
         }
     }
+
+    @Test
+    fun previewCountsCodePointsForEmoji() = runTest {
+        val s = store()
+        val emoji = "\uD83D\uDE00" // one code point, two UTF-16 units
+        s.put(emoji.repeat(MemorySummary.PREVIEW_CHARS + 100))
+        s.put(emoji.repeat(MemorySummary.PREVIEW_CHARS))
+        val summaries = s.observeSummaries(10).first().associateBy { it.entry.id }.values
+        val (long, exact) = summaries.sortedByDescending { it.truncated }
+        assertTrue(long.truncated)
+        assertEquals(MemorySummary.PREVIEW_CHARS, long.entry.content.codePointCount(0, long.entry.content.length))
+        assertFalse(exact.truncated)
+    }
 }

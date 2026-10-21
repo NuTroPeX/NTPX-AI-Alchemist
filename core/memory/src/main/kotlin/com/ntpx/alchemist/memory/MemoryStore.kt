@@ -44,8 +44,7 @@ data class ScoredMemory(val entry: MemoryEntry, val score: Double)
  * A list row for display: [entry] carries at most [PREVIEW_CHARS] of content, so a screen of
  * summaries stays small however large individual memories are. Never write a summary back.
  */
-data class MemorySummary(val entry: MemoryEntry, val contentLength: Int) {
-    val truncated: Boolean get() = contentLength > entry.content.length
+data class MemorySummary(val entry: MemoryEntry, val truncated: Boolean) {
 
     companion object {
         const val PREVIEW_CHARS = 600
@@ -85,7 +84,12 @@ fun normaliseTags(tags: Set<String>): Set<String> =
     tags.map { it.trim().replace(Regex("\\s+"), "-").lowercase() }.filter { it.isNotEmpty() }.toSet()
 
 fun MemoryEntry.toSummary(): MemorySummary =
-    MemorySummary(copy(content = content.take(MemorySummary.PREVIEW_CHARS)), content.length)
+    // Counts code points, like SQLite's substr/length, so emoji and other supplementary characters
+    // are neither split in half nor mistaken for a complete preview.
+    content.codePointCount(0, content.length).let { points ->
+        val end = if (points > MemorySummary.PREVIEW_CHARS) content.offsetByCodePoints(0, MemorySummary.PREVIEW_CHARS) else content.length
+        MemorySummary(copy(content = content.substring(0, end)), truncated = points > MemorySummary.PREVIEW_CHARS)
+    }
 
 class InMemoryMemoryStore(
     private val clock: () -> Long = System::currentTimeMillis,

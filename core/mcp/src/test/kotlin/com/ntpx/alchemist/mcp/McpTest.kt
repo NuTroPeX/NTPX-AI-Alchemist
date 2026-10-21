@@ -156,10 +156,12 @@ class McpTest {
             """{"jsonrpc":"2.0","id":1,"method":{}}""",
             """{"jsonrpc":"2.0","id":1}""",
             """[1,2,3]""",
+            """[]""",
+            """42""",
         ).forEach { raw ->
             val response = server.handle(raw)
             val code = (JsonRpcCodec.decode(response!!) as JsonRpcResponse).error?.code
-            assertTrue("Unexpected code $code for $raw", code == JsonRpcError.INVALID_REQUEST || code == JsonRpcError.PARSE_ERROR)
+            assertEquals("Unexpected code for $raw", JsonRpcError.INVALID_REQUEST, code)
         }
     }
 }

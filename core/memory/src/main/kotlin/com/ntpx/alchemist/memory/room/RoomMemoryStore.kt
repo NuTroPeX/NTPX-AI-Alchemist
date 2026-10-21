@@ -63,16 +63,17 @@ internal data class MemorySummaryRow(
     @androidx.room.ColumnInfo(name = "created_at") val createdAt: Long,
     @androidx.room.ColumnInfo(name = "updated_at") val updatedAt: Long,
     val pinned: Boolean,
-    @androidx.room.ColumnInfo(name = "content_length") val contentLength: Int,
+    /** Computed in SQL with the same code-point semantics as the substr preview. */
+    val truncated: Boolean,
 ) {
     fun toSummary() = MemorySummary(
         MemoryRow(id, namespace, content, tags, createdAt, updatedAt, pinned).toEntry(),
-        contentLength,
+        truncated,
     )
 }
 
 private const val SUMMARY_COLUMNS =
-    "id, namespace, substr(content, 1, 600) AS content, tags, created_at, updated_at, pinned, length(content) AS content_length"
+    "id, namespace, substr(content, 1, 600) AS content, tags, created_at, updated_at, pinned, (length(content) > 600) AS truncated"
 
 /** Ranking reads only a prefix of each row, which bounds search memory regardless of entry size. */
 private const val SCAN_COLUMNS =

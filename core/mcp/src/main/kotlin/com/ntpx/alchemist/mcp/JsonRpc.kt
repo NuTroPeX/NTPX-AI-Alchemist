@@ -10,7 +10,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 /** JSON-RPC 2.0 messages as used by the Model Context Protocol. */
@@ -69,11 +68,13 @@ object JsonRpcCodec {
 
     /** Decodes one message or throws [McpProtocolException] with a JSON-RPC error code. */
     fun decode(text: String): JsonRpcMessage {
-        val obj = try {
-            json.parseToJsonElement(text).jsonObject
+        // PARSE_ERROR is only for invalid JSON; valid JSON that isn't an object is an INVALID_REQUEST.
+        val element = try {
+            json.parseToJsonElement(text)
         } catch (e: Exception) {
             throw McpProtocolException(JsonRpcError(JsonRpcError.PARSE_ERROR, "Parse error"))
         }
+        val obj = element as? JsonObject ?: throw invalidRequest("Message must be a JSON object")
         // Every structural check uses safe casts: well-formed JSON with wrong shapes must become
         // a JSON-RPC error, never an exception escaping the server.
         if ((obj["jsonrpc"] as? JsonPrimitive)?.takeIf { it.isString }?.content != "2.0") {
