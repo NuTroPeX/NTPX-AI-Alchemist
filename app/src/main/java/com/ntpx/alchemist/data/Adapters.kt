@@ -1,6 +1,7 @@
 package com.ntpx.alchemist.data
 
 import com.ntpx.alchemist.agent.MemoryPort
+import com.ntpx.alchemist.agent.ModelRoute
 import com.ntpx.alchemist.agent.ModelPort
 import com.ntpx.alchemist.agent.Permission
 import com.ntpx.alchemist.agent.ToolPort
@@ -9,6 +10,9 @@ import com.ntpx.alchemist.mcp.ToolDefinition
 import com.ntpx.alchemist.memory.MemoryStore
 import com.ntpx.alchemist.registry.Capability
 import com.ntpx.alchemist.registry.ModelRouter
+import com.ntpx.alchemist.registry.Placement
+import com.ntpx.alchemist.registry.RouteResult
+import com.ntpx.alchemist.registry.RoutingPolicy
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,11 +22,22 @@ class RegistryModelPort(
     private val router: ModelRouter,
     private val settings: StateFlow<AppSettings>,
 ) : ModelPort {
-    override suspend fun generate(prompt: String, system: String?, allowCloud: Boolean): String {
+    private fun policy(allowCloud: Boolean): RoutingPolicy {
         val base = settings.value.routingPolicy
-        val policy = base.copy(allowCloud = base.allowCloud && allowCloud)
-        return router.generate(Capability.CHAT, policy, prompt, system).getOrThrow().text
+        return base.copy(allowCloud = base.allowCloud && allowCloud)
     }
+
+    override fun route(allowCloud: Boolean): ModelRoute = when (val route = router.route(Capability.CHAT, policy(allowCloud))) {
+        is RouteResult.NoRoute -> throw IllegalStateException(route.reason)
+        is RouteResult.Routed -> ModelRoute(
+            modelId = route.model.id,
+            usesNetwork = route.model.placement != Placement.ON_DEVICE,
+            cloud = route.model.placement == Placement.CLOUD,
+        )
+    }
+
+    override suspend fun generate(route: ModelRoute, prompt: String, system: String?): String =
+        router.generate(route.modelId, policy(allowCloud = route.cloud), prompt, system).getOrThrow().text
 }
 
 /** Exposes MCP tools to agents and maps `_meta["ntpx/permissions"]` to runtime permissions. */

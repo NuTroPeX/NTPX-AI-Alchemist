@@ -46,23 +46,19 @@ class AgentRuntime(
                 audit.append(task.agentId, task.id, AuditType.STEP_STARTED, "#$index ${step.label}")
                 emit(TaskEvent.StepStarted(task.id, index, step.label))
 
-                val required = try {
-                    step.requiredPermissions(tools)
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    fail(task, index, "Cannot resolve permissions: ${e.message}", TaskStatus.FAILED, outputs)
-                    return@flow
-                }
-                for (permission in required.sortedBy { it.ordinal }) {
-                    if (!gate.authorize(task.agentId, task.id, permission, "#$index ${step.label}")) {
-                        emit(TaskEvent.StepDenied(task.id, index, permission))
-                        finish(task, TaskStatus.DENIED, outputs)
-                        return@flow
+                // Route resolution, permission checks (including consent prompts) and execution
+                // all share the step timeout so no part of a step can wait unbounded.
+                val outcome = try {
+                    withTimeout(task.budget.stepTimeoutMillis) {
+                        val route = if (step is AgentStep.Generate) models.route(step.allowCloud) else null
+                        val required = step.requiredPermissions(tools, route)
+                        for (permission in required.sortedBy { it.ordinal }) {
+                            if (!gate.authorize(task.agentId, task.id, permission, "#$index ${step.label}")) {
+                                return@withTimeout StepOutcome.Denied(permission)
+                            }
+                        }
+                        StepOutcome.Ok(execute(step, route, task.goal, outputs))
                     }
-                }
-
-                val output = try {
-                    withTimeout(task.budget.stepTimeoutMillis) { execute(step, task.goal, outputs) }
                 } catch (e: TimeoutCancellationException) {
                     fail(task, index, "Timed out after ${task.budget.stepTimeoutMillis} ms", TaskStatus.TIMED_OUT, outputs)
                     return@flow
@@ -71,6 +67,15 @@ class AgentRuntime(
                 } catch (e: Exception) {
                     fail(task, index, e.message ?: e::class.simpleName.orEmpty(), TaskStatus.FAILED, outputs)
                     return@flow
+                }
+
+                val output = when (outcome) {
+                    is StepOutcome.Denied -> {
+                        emit(TaskEvent.StepDenied(task.id, index, outcome.permission))
+                        finish(task, TaskStatus.DENIED, outputs)
+                        return@flow
+                    }
+                    is StepOutcome.Ok -> outcome.output
                 }
 
                 outputs += output
@@ -84,11 +89,16 @@ class AgentRuntime(
         }
     }
 
-    private suspend fun execute(step: AgentStep, goal: String, outputs: List<String>): String = when (step) {
+    private sealed interface StepOutcome {
+        data class Ok(val output: String) : StepOutcome
+        data class Denied(val permission: Permission) : StepOutcome
+    }
+
+    private suspend fun execute(step: AgentStep, route: ModelRoute?, goal: String, outputs: List<String>): String = when (step) {
         is AgentStep.Generate -> models.generate(
+            route = requireNotNull(route),
             prompt = Templates.resolve(step.prompt, goal, outputs),
             system = step.system?.let { Templates.resolve(it, goal, outputs) },
-            allowCloud = step.allowCloud,
         )
         is AgentStep.CallTool -> tools.call(
             step.tool,

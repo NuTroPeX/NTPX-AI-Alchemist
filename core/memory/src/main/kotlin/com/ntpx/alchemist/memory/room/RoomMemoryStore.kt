@@ -58,11 +58,17 @@ internal interface MemoryDao {
     @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC")
     fun observeNamespace(namespace: String): Flow<List<MemoryRow>>
 
+    @Query("SELECT * FROM memory ORDER BY pinned DESC, updated_at DESC, id ASC")
+    suspend fun all(): List<MemoryRow>
+
+    @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC")
+    suspend fun inNamespace(namespace: String): List<MemoryRow>
+
     @Query("SELECT * FROM memory ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
-    suspend fun all(limit: Int): List<MemoryRow>
+    suspend fun recent(limit: Int): List<MemoryRow>
 
     @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
-    suspend fun inNamespace(namespace: String, limit: Int): List<MemoryRow>
+    suspend fun recentInNamespace(namespace: String, limit: Int): List<MemoryRow>
 
     @Query("SELECT * FROM memory WHERE id = :id")
     suspend fun get(id: String): MemoryRow?
@@ -116,15 +122,18 @@ class RoomMemoryStore private constructor(
         return dao.update(MemoryRow.from(entry.copy(createdAt = existing.createdAt, updatedAt = clock()))) > 0
     }
 
-    override suspend fun search(query: String, namespace: String?, limit: Int): List<ScoredMemory> =
-        ranker.rank(query, all(namespace), limit)
+    /** Ranks the newest [SCAN_LIMIT] rows; the cap bounds search cost only, never [all] or export. */
+    override suspend fun search(query: String, namespace: String?, limit: Int): List<ScoredMemory> {
+        val candidates = if (namespace == null) dao.recent(SCAN_LIMIT) else dao.recentInNamespace(namespace, SCAN_LIMIT)
+        return ranker.rank(query, candidates.map(MemoryRow::toEntry), limit)
+    }
 
     override suspend fun delete(id: String): Boolean = dao.delete(id) > 0
 
     override suspend fun clear(namespace: String?): Int = if (namespace == null) dao.clearAll() else dao.clearNamespace(namespace)
 
     override suspend fun all(namespace: String?): List<MemoryEntry> =
-        (if (namespace == null) dao.all(SCAN_LIMIT) else dao.inNamespace(namespace, SCAN_LIMIT)).map(MemoryRow::toEntry)
+        (if (namespace == null) dao.all() else dao.inNamespace(namespace)).map(MemoryRow::toEntry)
 
     /** Restores entries from an export, replacing any with the same id. */
     suspend fun import(entries: List<MemoryEntry>): Int {

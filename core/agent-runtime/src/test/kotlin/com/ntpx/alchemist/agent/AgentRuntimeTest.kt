@@ -10,9 +10,14 @@ import org.junit.Test
 
 class AgentRuntimeTest {
 
-    private class FakeModels(private val delayMillis: Long = 0) : ModelPort {
+    /** [cloudAvailable] false mimics a router that falls back to on-device even when cloud is allowed. */
+    private class FakeModels(private val delayMillis: Long = 0, private val cloudAvailable: Boolean = true) : ModelPort {
         val prompts = mutableListOf<String>()
-        override suspend fun generate(prompt: String, system: String?, allowCloud: Boolean): String {
+        override fun route(allowCloud: Boolean): ModelRoute =
+            if (allowCloud && cloudAvailable) ModelRoute("cloud", usesNetwork = true, cloud = true)
+            else ModelRoute("local", usesNetwork = false, cloud = false)
+
+        override suspend fun generate(route: ModelRoute, prompt: String, system: String?): String {
             if (delayMillis > 0) delay(delayMillis)
             prompts += prompt
             return "draft for: ${prompt.lineSequence().first()}"
@@ -52,12 +57,13 @@ class AgentRuntimeTest {
         consent: ConsentDecision = ConsentDecision.ALLOW_ONCE,
         models: FakeModels = FakeModels(),
         tools: FakeTools = FakeTools(),
+        consentProvider: ConsentProvider? = null,
     ): Harness {
         var clock = 0L
         val audit = InMemoryAuditLog(clock = { clock++ })
         val grants = GrantTable()
         val requests = mutableListOf<ConsentRequest>()
-        val gate = PermissionGate(grants, { requests += it; consent }, audit)
+        val gate = PermissionGate(grants, consentProvider ?: ConsentProvider { requests += it; consent }, audit)
         val memory = FakeMemory()
         return Harness(AgentRuntime(gate, audit, models, tools, memory), audit, grants, models, tools, memory, requests)
     }
@@ -155,5 +161,35 @@ class AgentRuntimeTest {
         val h = harness()
         h.runtime.run(planner.plan("agent", "goal")).take(2).toList()
         assertEquals(AuditType.TASK_CANCELLED, h.audit.entries.value.last().type)
+    }
+
+    @Test
+    fun permittingCloudDoesNotBypassDeniedLocalModel() = runTest {
+        val h = harness(models = FakeModels(cloudAvailable = false))
+        h.grants.set("agent", Permission.INVOKE_LOCAL_MODEL, Grant.DENY)
+        h.grants.set("agent", Permission.INVOKE_CLOUD_MODEL, Grant.ALLOW)
+        h.grants.set("agent", Permission.NETWORK, Grant.ALLOW)
+        val task = AgentTask("t", "agent", "g", listOf(AgentStep.Generate("hi", allowCloud = true)))
+        val events = h.runtime.run(task).toList()
+        assertEquals(Permission.INVOKE_LOCAL_MODEL, events.filterIsInstance<TaskEvent.StepDenied>().single().permission)
+        assertTrue(h.models.prompts.isEmpty())
+    }
+
+    @Test
+    fun cloudRouteRequiresCloudAndNetwork() = runTest {
+        val h = harness()
+        h.grants.set("agent", Permission.INVOKE_CLOUD_MODEL, Grant.ALLOW)
+        val task = AgentTask("t", "agent", "g", listOf(AgentStep.Generate("hi", allowCloud = true)))
+        val events = h.runtime.run(task).toList()
+        assertEquals(Permission.NETWORK, events.filterIsInstance<TaskEvent.StepDenied>().single().permission)
+    }
+
+    @Test
+    fun stepTimeoutCoversUnansweredConsent() = runTest {
+        val h = harness(consentProvider = { kotlinx.coroutines.awaitCancellation() })
+        val task = AgentTask("t", "agent", "g", listOf(AgentStep.CallTool("text.stats")), Budget(stepTimeoutMillis = 100))
+        val events = h.runtime.run(task).toList()
+        assertEquals(TaskStatus.TIMED_OUT, (events.last() as TaskEvent.Finished).status)
+        assertTrue(h.tools.calls.isEmpty())
     }
 }

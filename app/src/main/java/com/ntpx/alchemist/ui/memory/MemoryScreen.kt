@@ -1,7 +1,6 @@
 package com.ntpx.alchemist.ui.memory
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -82,13 +81,17 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
         viewModelScope.launch { results.value = store.search(text, limit = 50).map { it.entry } }
     }
 
-    fun add(content: String, tags: String) {
+    /** [onSaved] runs only after the insert succeeds, so a rejected draft stays in the editor. */
+    fun add(content: String, tags: String, onSaved: () -> Unit) {
         if (content.isBlank()) return
         val tagSet = tags.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         viewModelScope.launch {
             runCatching { store.put(content, tags = tagSet) }
-                .onFailure { messages.value = it.message }
-                .onSuccess { refreshSearch() }
+                .onFailure { messages.value = "Not saved: ${it.message}" }
+                .onSuccess {
+                    onSaved()
+                    refreshSearch()
+                }
         }
     }
 
@@ -109,19 +112,31 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
         messages.value = "Deleted $removed entries"
     }
 
-    suspend fun exportJson(): String = MemoryExportCodec.encode(store.all(), System.currentTimeMillis())
+    /** Writes every entry to a user-chosen document (streamed to a file, so size is not bound by Binder limits). */
+    fun exportTo(context: Context, uri: Uri) = viewModelScope.launch {
+        val entries = store.all()
+        val outcome = withContext(Dispatchers.IO) {
+            runCatching {
+                val json = MemoryExportCodec.encode(entries, System.currentTimeMillis())
+                (context.contentResolver.openOutputStream(uri, "wt") ?: error("Could not open file")).bufferedWriter().use { it.write(json) }
+            }
+        }
+        messages.value = outcome.fold({ "Exported ${entries.size} entries" }, { "Export failed: ${it.message}" })
+    }
 
     fun import(context: Context, uri: Uri) = viewModelScope.launch {
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
-                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    ?: error("Could not open file")
-                require(text.length <= MAX_IMPORT_CHARS) { "File is too large" }
+                val reader = context.contentResolver.openInputStream(uri)?.bufferedReader() ?: error("Could not open file")
+                val text = reader.use { readBounded(it, MAX_IMPORT_CHARS) } ?: throw IllegalArgumentException("File is too large")
                 MemoryExportCodec.decode(text).getOrThrow()
             }
         }
         outcome
-            .onSuccess { export -> messages.value = "Imported ${store.import(export.entries)} entries" }
+            .onSuccess { export ->
+                messages.value = "Imported ${store.import(export.entries)} entries"
+                refreshSearch()
+            }
             .onFailure { messages.value = "Import failed: ${it.message}" }
     }
 
@@ -134,8 +149,20 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
         if (q.isNotBlank()) results.value = store.search(q, limit = 50).map { it.entry }
     }
 
-    private companion object {
+    companion object {
         const val MAX_IMPORT_CHARS = 20_000_000
+
+        /** Reads at most [limit] characters; returns null if the source is longer, without loading the rest. */
+        fun readBounded(reader: java.io.Reader, limit: Int): String? {
+            val out = StringBuilder()
+            val buffer = CharArray(8_192)
+            while (true) {
+                val n = reader.read(buffer)
+                if (n < 0) return out.toString()
+                if (out.length + n > limit) return null
+                out.appendRange(buffer, 0, n)
+            }
+        }
     }
 }
 
@@ -147,23 +174,12 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
     var draft by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
-    var exporting by remember { mutableStateOf(false) }
-
-    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.import(context, uri)
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) vm.exportTo(context.applicationContext, uri)
     }
 
-    if (exporting) {
-        androidx.compose.runtime.LaunchedEffect(Unit) {
-            val json = vm.exportJson()
-            val send = Intent(Intent.ACTION_SEND).apply {
-                type = "application/json"
-                putExtra(Intent.EXTRA_SUBJECT, "NTPX Alchemist memory export")
-                putExtra(Intent.EXTRA_TEXT, json)
-            }
-            context.startActivity(Intent.createChooser(send, "Export memory"))
-            exporting = false
-        }
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.import(context.applicationContext, uri)
     }
 
     val visible = state.results ?: state.entries
@@ -185,9 +201,10 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
                 OutlinedTextField(tags, { tags = it }, placeholder = { Text("tags, comma separated") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(
                     onClick = {
-                        vm.add(draft, tags)
-                        draft = ""
-                        tags = ""
+                        vm.add(draft, tags) {
+                            draft = ""
+                            tags = ""
+                        }
                     },
                     enabled = draft.isNotBlank(),
                     colors = ButtonDefaults.buttonColors(containerColor = Ntpx.Violet),
@@ -207,7 +224,7 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
         item {
             SectionHeader(if (state.results != null) "${visible.size} matches" else "${state.entries.size} stored") {
                 Row {
-                    TextButton(onClick = { exporting = true }, enabled = state.entries.isNotEmpty()) { Text("EXPORT") }
+                    TextButton(onClick = { exporter.launch("alchemist-memory.json") }, enabled = state.entries.isNotEmpty()) { Text("EXPORT") }
                     TextButton(onClick = { importer.launch(arrayOf("application/json", "text/plain")) }) { Text("IMPORT") }
                     TextButton(onClick = { confirmClear = true }, enabled = state.entries.isNotEmpty()) { Text("CLEAR", color = Ntpx.Danger) }
                 }

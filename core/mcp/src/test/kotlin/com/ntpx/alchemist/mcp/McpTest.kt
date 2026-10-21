@@ -53,7 +53,7 @@ class McpTest {
     fun callsTextStats() = runTest {
         val result = client.callTool("text.stats", mapOf("text" to "Forge the core. Ship it!\nAgain"))
         assertFalse(result.isError)
-        assertEquals("words=6 chars=30 lines=2 sentences=2", result.text)
+        assertEquals("words=6 chars=30 lines=2 sentences=3", result.text)
     }
 
     @Test
@@ -106,6 +106,8 @@ class McpTest {
         assertEquals("1", math.evaluate("10 % 3").toPlainString())
         assertTrue(client.callTool("math.evaluate", mapOf("expression" to "1/0")).isError)
         assertTrue(client.callTool("math.evaluate", mapOf("expression" to "2 ^ 100000")).isError)
+        assertTrue(client.callTool("math.evaluate", mapOf("expression" to "2 ^ 4294967296")).isError)
+        assertTrue(client.callTool("math.evaluate", mapOf("expression" to "2 ^ -4294967297")).isError)
         assertTrue(client.callTool("math.evaluate", mapOf("expression" to "exec(1)")).isError)
         assertTrue(client.callTool("math.evaluate", mapOf("expression" to "(".repeat(100) + "1" + ")".repeat(100))).isError)
     }
@@ -124,6 +126,31 @@ class McpTest {
             fail("Expected MCP error $code")
         } catch (e: McpProtocolException) {
             assertEquals(code, e.error.code)
+        }
+    }
+
+    @Test
+    fun sentenceCountIncludesUnpunctuatedTailAndIgnoresBarePunctuation() = runTest {
+        suspend fun sentences(text: String) = client.callTool("text.stats", mapOf("text" to text)).text.substringAfter("sentences=")
+        assertEquals("2", sentences("First. Second"))
+        assertEquals("1", sentences("Just one"))
+        assertEquals("0", sentences("   "))
+        assertEquals("2", sentences("Wait. What?!"))
+        assertEquals("1", sentences("?! Really?"))
+        assertEquals("0", sentences("..."))
+    }
+
+    @Test
+    fun wellFormedJsonWithWrongShapesGetsInvalidRequest() = runTest {
+        listOf(
+            """{"jsonrpc":{},"id":1,"method":"ping"}""",
+            """{"jsonrpc":"2.0","id":{},"method":"ping"}""",
+            """{"jsonrpc":"2.0","id":1,"error":"boom"}""",
+            """[1,2,3]""",
+        ).forEach { raw ->
+            val response = server.handle(raw)
+            val code = (JsonRpcCodec.decode(response!!) as JsonRpcResponse).error?.code
+            assertTrue("Unexpected code $code for $raw", code == JsonRpcError.INVALID_REQUEST || code == JsonRpcError.PARSE_ERROR)
         }
     }
 }

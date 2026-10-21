@@ -126,4 +126,15 @@ class ModelRegistryTest {
         assertEquals("[echo:m] hello alchemist", result.text)
         assertEquals(2, result.promptTokens)
     }
+
+    @Test
+    fun generateByIdRechecksReadinessAndPolicy() = runTest {
+        val registry = InMemoryModelRegistry(listOf(model("device"), model("cloud", Placement.CLOUD)))
+        val router = ModelRouter(registry, listOf(EchoBackend()))
+        assertEquals("[echo:device] hi", router.generate("device", RoutingPolicy(), "hi").getOrThrow().text)
+        assertTrue(router.generate("cloud", RoutingPolicy(), "hi").isFailure)
+        registry.setAvailability("device", Availability.UNAVAILABLE)
+        assertTrue(router.generate("device", RoutingPolicy(), "hi").isFailure)
+        assertTrue(router.generate("missing", RoutingPolicy(), "hi").isFailure)
+    }
 }

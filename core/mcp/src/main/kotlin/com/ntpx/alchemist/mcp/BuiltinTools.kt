@@ -23,7 +23,9 @@ class TextStatsTool : ToolProvider {
     override suspend fun invoke(arguments: JsonObject): CallToolResult {
         val text = arguments.string("text") ?: return CallToolResult.error("'text' must be a string")
         val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
-        val sentences = Regex("[^.!?]+[.!?]+").findAll(text).count().let { if (it == 0 && text.isNotBlank()) 1 else it }
+        val terminated = Regex("[^.!?]*[\\p{L}\\p{N}][^.!?]*[.!?]+").findAll(text).toList()
+        val tail = text.substring(terminated.lastOrNull()?.range?.last?.plus(1) ?: 0)
+        val sentences = terminated.size + if (tail.any { it.isLetterOrDigit() }) 1 else 0
         val lines = if (text.isEmpty()) 0 else text.lines().size
         return CallToolResult.text("words=$words chars=${text.length} lines=$lines sentences=$sentences")
     }
@@ -120,8 +122,9 @@ class MathTool : ToolProvider {
             if (!eat('^')) return base
             val exponent = power() // right-associative
             require(exponent.stripTrailingZeros().scale() <= 0) { "exponent must be an integer" }
-            val n = exponent.toInt()
-            require(n in -MAX_EXPONENT..MAX_EXPONENT) { "exponent must be within ±$MAX_EXPONENT" }
+            // Compare as BigDecimal first: narrowing a huge value to Int would wrap and slip past the limit.
+            require(exponent.abs() <= BigDecimal(MAX_EXPONENT)) { "exponent must be within ±$MAX_EXPONENT" }
+            val n = exponent.intValueExact()
             return if (n >= 0) base.pow(n, MC) else BigDecimal.ONE.divide(base.pow(-n, MC), MC)
         }
 

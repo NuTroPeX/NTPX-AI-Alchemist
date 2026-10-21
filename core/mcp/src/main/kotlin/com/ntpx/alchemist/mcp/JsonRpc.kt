@@ -9,7 +9,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /** JSON-RPC 2.0 messages as used by the Model Context Protocol. */
@@ -73,10 +72,16 @@ object JsonRpcCodec {
         } catch (e: Exception) {
             throw McpProtocolException(JsonRpcError(JsonRpcError.PARSE_ERROR, "Parse error"))
         }
-        if (obj["jsonrpc"]?.jsonPrimitive?.contentOrNull != "2.0") {
-            throw McpProtocolException(JsonRpcError(JsonRpcError.INVALID_REQUEST, "jsonrpc must be \"2.0\""))
+        // Every structural check uses safe casts: well-formed JSON with wrong shapes must become
+        // a JSON-RPC error, never an exception escaping the server.
+        if ((obj["jsonrpc"] as? JsonPrimitive)?.takeIf { it.isString }?.content != "2.0") {
+            throw invalidRequest("jsonrpc must be \"2.0\"")
         }
-        val id = obj["id"]?.takeUnless { it is JsonNull }
+        val id = when (val raw = obj["id"]) {
+            null, JsonNull -> null
+            is JsonPrimitive -> raw
+            else -> throw invalidRequest("id must be a string or number")
+        }
         val method = (obj["method"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         val params = obj["params"]?.let {
             it as? JsonObject ?: throw McpProtocolException(JsonRpcError(JsonRpcError.INVALID_PARAMS, "params must be an object"))
@@ -85,18 +90,22 @@ object JsonRpcCodec {
             method != null && id != null -> JsonRpcRequest(id, method, params)
             method != null -> JsonRpcNotification(method, params)
             id != null || "result" in obj || "error" in obj -> {
-                val error = obj["error"]?.jsonObject?.let { err ->
-                    JsonRpcError(
-                        code = err["code"]?.jsonPrimitive?.intOrNull ?: JsonRpcError.INTERNAL_ERROR,
-                        message = err["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown error",
-                        data = err["data"],
+                val error = when (val raw = obj["error"]) {
+                    null, JsonNull -> null
+                    is JsonObject -> JsonRpcError(
+                        code = (raw["code"] as? JsonPrimitive)?.intOrNull ?: JsonRpcError.INTERNAL_ERROR,
+                        message = (raw["message"] as? JsonPrimitive)?.contentOrNull ?: "Unknown error",
+                        data = raw["data"],
                     )
+                    else -> throw invalidRequest("error must be an object")
                 }
                 JsonRpcResponse(id ?: JsonNull, obj["result"], error)
             }
-            else -> throw McpProtocolException(JsonRpcError(JsonRpcError.INVALID_REQUEST, "Missing method and id"))
+            else -> throw invalidRequest("Missing method and id")
         }
     }
+
+    private fun invalidRequest(message: String) = McpProtocolException(JsonRpcError(JsonRpcError.INVALID_REQUEST, message))
 
     /** Best-effort id extraction so error responses can still be correlated by the caller. */
     fun peekId(text: String): JsonElement = runCatching {

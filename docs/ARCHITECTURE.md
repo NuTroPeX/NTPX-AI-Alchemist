@@ -36,7 +36,7 @@ in `data/Adapters.kt`.
 - `PermissionGate` + `GrantTable` — per-agent `ALLOW` / `ASK` / `DENY`; anything unset is
   `DENY` (fail closed). `ASK` goes to a `ConsentProvider` (the app's dialog).
 - `AgentRuntime.run(task): Flow<TaskEvent>` — checks every permission a step needs before running
-  it, enforces a step budget and per-step timeout, stops on the first denial/error, and audits
+  it, enforces a step budget and a per-step timeout that also covers consent prompts, stops on the first denial/error, and audits
   every transition. Cancelling the collector cancels the task and is audited.
 - `AuditLog` / `InMemoryAuditLog` — append-only, SHA-256 hash-chained with length-prefixed
   fields; editing or removing an entry breaks verification from that point on.
@@ -64,7 +64,7 @@ in `data/Adapters.kt`.
 - Jetpack Compose + Material 3, neon-noir theme (Rajdhani, JetBrains Mono; OFL licences in
   `docs/licenses/`).
 - Tabs: **Registry** (filter by capability/placement/readiness), **Agents** (run a goal, live step
-  timeline, loaded MCP tools), **Memory** (add, search, pin, delete, export via share sheet,
+  timeline, loaded MCP tools), **Memory** (add, search, pin, delete, export to a file,
   import from file, clear with confirmation), **Security** (routing toggles, per-permission grants,
   audit log with live chain verification).
 - `AppContainer` — manual DI. Settings and grants persist in private SharedPreferences; the audit

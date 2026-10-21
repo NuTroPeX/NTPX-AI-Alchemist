@@ -93,6 +93,22 @@ class ModelRouter(
         return RouteResult.Routed(chosen, backendsById.getValue(chosen.backend))
     }
 
+    /**
+     * Runs inference on one specific, previously routed model. Re-checks that it is still
+     * registered, ready, within [policy] and backed, so a stale route cannot reach a model
+     * the user has since disabled.
+     */
+    suspend fun generate(modelId: String, policy: RoutingPolicy, prompt: String, system: String? = null): Result<GenerationResult> {
+        val model = registry.get(modelId) ?: return Result.failure(IllegalStateException("Model '$modelId' is not registered"))
+        if (model.availability != Availability.READY) return Result.failure(IllegalStateException("Model '$modelId' is not ready"))
+        if (model.placement !in policy.allowedPlacements) {
+            return Result.failure(IllegalStateException("Model '$modelId' placement ${model.placement.name.lowercase()} is not allowed"))
+        }
+        val backend = backendsById[model.backend]
+            ?: return Result.failure(IllegalStateException("No backend '${model.backend}' for model '$modelId'"))
+        return runCatching { backend.generate(GenerationRequest(modelId = model.id, prompt = prompt, system = system)) }
+    }
+
     suspend fun generate(capability: Capability, policy: RoutingPolicy, prompt: String, system: String? = null): Result<GenerationResult> =
         when (val route = route(capability, policy)) {
             is RouteResult.NoRoute -> Result.failure(IllegalStateException(route.reason))

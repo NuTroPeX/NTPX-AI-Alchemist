@@ -3,7 +3,8 @@ package com.ntpx.alchemist.agent
 /** Limits that bound every task so a runaway plan cannot loop or hang forever. */
 data class Budget(
     val maxSteps: Int = 32,
-    val stepTimeoutMillis: Long = 30_000,
+    /** Covers permission prompts as well as execution, so it includes time the user spends deciding. */
+    val stepTimeoutMillis: Long = 120_000,
 ) {
     init {
         require(maxSteps in 1..256) { "maxSteps must be in 1..256" }
@@ -32,8 +33,11 @@ data class AgentTask(
 sealed interface AgentStep {
     val label: String
 
-    /** Permissions that must all be granted before the step runs. */
-    fun requiredPermissions(tools: ToolPort): Set<Permission>
+    /**
+     * Permissions that must all be granted before the step runs. [modelRoute] is the
+     * resolved model for [Generate] steps (null for every other step).
+     */
+    fun requiredPermissions(tools: ToolPort, modelRoute: ModelRoute?): Set<Permission>
 
     data class Generate(
         val prompt: String,
@@ -41,8 +45,14 @@ sealed interface AgentStep {
         val allowCloud: Boolean = false,
         override val label: String = "Generate",
     ) : AgentStep {
-        override fun requiredPermissions(tools: ToolPort): Set<Permission> =
-            if (allowCloud) setOf(Permission.INVOKE_CLOUD_MODEL, Permission.NETWORK) else setOf(Permission.INVOKE_LOCAL_MODEL)
+        /** Gated on the route actually selected, so permitting cloud never smuggles in a denied local model. */
+        override fun requiredPermissions(tools: ToolPort, modelRoute: ModelRoute?): Set<Permission> {
+            val route = requireNotNull(modelRoute) { "Generate step requires a resolved model route" }
+            return buildSet {
+                add(if (route.cloud) Permission.INVOKE_CLOUD_MODEL else Permission.INVOKE_LOCAL_MODEL)
+                if (route.usesNetwork || route.cloud) add(Permission.NETWORK)
+            }
+        }
     }
 
     data class CallTool(
@@ -50,7 +60,7 @@ sealed interface AgentStep {
         val arguments: Map<String, String> = emptyMap(),
         override val label: String = "Tool: $tool",
     ) : AgentStep {
-        override fun requiredPermissions(tools: ToolPort): Set<Permission> =
+        override fun requiredPermissions(tools: ToolPort, modelRoute: ModelRoute?): Set<Permission> =
             setOf(Permission.INVOKE_TOOL) + tools.requiredPermissions(tool)
     }
 
@@ -59,7 +69,7 @@ sealed interface AgentStep {
         val limit: Int = 5,
         override val label: String = "Recall memory",
     ) : AgentStep {
-        override fun requiredPermissions(tools: ToolPort): Set<Permission> = setOf(Permission.READ_MEMORY)
+        override fun requiredPermissions(tools: ToolPort, modelRoute: ModelRoute?): Set<Permission> = setOf(Permission.READ_MEMORY)
     }
 
     data class Remember(
@@ -67,7 +77,7 @@ sealed interface AgentStep {
         val tags: Set<String> = emptySet(),
         override val label: String = "Write memory",
     ) : AgentStep {
-        override fun requiredPermissions(tools: ToolPort): Set<Permission> = setOf(Permission.WRITE_MEMORY)
+        override fun requiredPermissions(tools: ToolPort, modelRoute: ModelRoute?): Set<Permission> = setOf(Permission.WRITE_MEMORY)
     }
 }
 

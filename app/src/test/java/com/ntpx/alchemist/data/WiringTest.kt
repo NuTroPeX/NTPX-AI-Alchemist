@@ -133,4 +133,15 @@ class WiringTest {
         assertEquals(ConsentDecision.DENY, decision)
         assertNull(broker.pending.value)
     }
+
+    @Test
+    fun deniedLocalModelBlocksCloudEnabledStepThatRoutesOnDevice() = runTest {
+        val s = stack()
+        s.grants.set("alchemist", Permission.INVOKE_LOCAL_MODEL, com.ntpx.alchemist.agent.Grant.DENY)
+        s.grants.set("alchemist", Permission.INVOKE_CLOUD_MODEL, com.ntpx.alchemist.agent.Grant.ALLOW)
+        s.grants.set("alchemist", Permission.NETWORK, com.ntpx.alchemist.agent.Grant.ALLOW)
+        val task = AgentTask("t", "alchemist", "g", listOf(AgentStep.Generate("hello", allowCloud = true)))
+        val events = s.runtime.run(task).toList()
+        assertEquals(Permission.INVOKE_LOCAL_MODEL, events.filterIsInstance<TaskEvent.StepDenied>().single().permission)
+    }
 }
