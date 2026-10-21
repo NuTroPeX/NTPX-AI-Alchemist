@@ -20,9 +20,14 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/wrapper-validation@v4
-      - uses: android-actions/setup-android@v3
+      # The runner image ships the Android SDK. setup-android@v3 is avoided because it installs the
+      # removed legacy 'tools' package by default, which now fails sdkmanager.
       - name: Install Android SDK packages
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+        run: |
+          SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests (all modules)
         run: ./gradlew --stacktrace test
