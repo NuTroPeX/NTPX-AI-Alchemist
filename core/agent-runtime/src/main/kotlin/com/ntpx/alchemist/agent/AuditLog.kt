@@ -59,6 +59,19 @@ object AuditHashing {
     }
 }
 
+/**
+ * Where a retained chain must start: the first entry's sequence and previous hash. Genesis for a
+ * full log; after compaction, a checkpoint recorded at compaction time. Anchoring stops a cleanly
+ * removed prefix from passing as legitimate compaction.
+ */
+data class ChainAnchor(val sequence: Long, val previousHash: String) {
+    companion object {
+        val GENESIS = ChainAnchor(0, AuditHashing.GENESIS)
+
+        fun of(first: AuditEntry) = ChainAnchor(first.sequence, first.previousHash)
+    }
+}
+
 sealed interface ChainVerification {
     data object Valid : ChainVerification
     data class Broken(val atSequence: Long, val reason: String) : ChainVerification
@@ -69,12 +82,20 @@ interface AuditLog {
 
     fun append(agentId: String, taskId: String, type: AuditType, detail: String): AuditEntry
 
-    fun verify(): ChainVerification = verifyChain(entries.value)
+    /** The trusted start of [entries]; see [ChainAnchor]. */
+    val anchor: ChainAnchor
+
+    fun verify(): ChainVerification = verifyChain(entries.value, anchor)
 
     companion object {
-        fun verifyChain(entries: List<AuditEntry>): ChainVerification {
-            var expectedPrevious = entries.firstOrNull()?.previousHash ?: return ChainVerification.Valid
-            var expectedSequence = entries.first().sequence
+        /** Verifies links and hashes; with [anchor], also that the chain starts exactly there. */
+        fun verifyChain(entries: List<AuditEntry>, anchor: ChainAnchor? = null): ChainVerification {
+            val first = entries.firstOrNull() ?: return ChainVerification.Valid
+            if (anchor != null && ChainAnchor.of(first) != anchor) {
+                return ChainVerification.Broken(first.sequence, "Chain does not start at its recorded anchor #${anchor.sequence}")
+            }
+            var expectedPrevious = first.previousHash
+            var expectedSequence = first.sequence
             for (entry in entries) {
                 if (entry.sequence != expectedSequence) {
                     return ChainVerification.Broken(entry.sequence, "Expected sequence $expectedSequence")
@@ -104,6 +125,8 @@ class InMemoryAuditLog(
     restored: List<AuditEntry> = emptyList(),
     private val capacity: Int = 5_000,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Trusted start of [restored] (from the journal's checkpoint); genesis when the log is complete. */
+    restoredAnchor: ChainAnchor = ChainAnchor.GENESIS,
     private val onAppend: (AuditEntry) -> Unit = {},
 ) : AuditLog {
     init {
@@ -113,7 +136,18 @@ class InMemoryAuditLog(
     private val lock = Any()
     private val state = MutableStateFlow(restored.takeLast(capacity))
 
+    @Volatile
+    override var anchor: ChainAnchor =
+        if (restored.size > capacity) ChainAnchor.of(state.value.first()) else restoredAnchor
+        private set
+
     override val entries: StateFlow<List<AuditEntry>> = state.asStateFlow()
+
+    /** Reads entries and anchor under the same lock, so a concurrent trim can't pair them inconsistently. */
+    override fun verify(): ChainVerification {
+        val (snapshot, start) = synchronized(lock) { state.value to anchor }
+        return AuditLog.verifyChain(snapshot, start)
+    }
 
     override fun append(agentId: String, taskId: String, type: AuditType, detail: String): AuditEntry {
         // Bounded so one huge goal or output can't bloat the log or the on-disk journal.
@@ -125,7 +159,14 @@ class InMemoryAuditLog(
             val timestamp = clock()
             val hash = AuditHashing.hash(sequence, timestamp, agentId, taskId, type, detail, previous)
             val created = AuditEntry(sequence, timestamp, agentId, taskId, type, detail, previous, hash)
-            state.value = (state.value + created).takeLast(capacity)
+            val next = state.value + created
+            if (next.size > capacity) {
+                val kept = next.takeLast(capacity)
+                anchor = ChainAnchor.of(kept.first()) // our own trim, so the new head is trusted
+                state.value = kept
+            } else {
+                state.value = next
+            }
             // Inside the lock so persistence sees entries in sequence order; keep callbacks fast (enqueue, don't block).
             onAppend(created)
             created

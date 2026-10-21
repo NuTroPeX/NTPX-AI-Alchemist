@@ -14,8 +14,9 @@ import java.io.Reader
  */
 @Serializable
 data class MemoryExportHeader(
-    val format: String = MemoryExportCodec.FORMAT,
-    val version: Int = MemoryExportCodec.VERSION,
+    // No defaults: a header missing these fields must not decode as a current-format export.
+    val format: String,
+    val version: Int,
     val exportedAt: Long,
 )
 
@@ -36,8 +37,13 @@ object MemoryExportCodec {
     const val VERSION = 2
     const val PAGE_SIZE = 200
 
-    /** Longest line accepted on import: a maximum-size entry with every character escaped, plus metadata. */
-    const val MAX_LINE_CHARS = MemoryEntry.MAX_CONTENT * 6 + 4_096
+    /**
+     * Longest line accepted on import: a maximum-size entry with every content and tag character
+     * escaped (\uXXXX is 6 chars), plus fixed metadata. Entry validation keeps every line this app
+     * writes within it, so export and import limits are symmetric.
+     */
+    const val MAX_LINE_CHARS =
+        (MemoryEntry.MAX_CONTENT + MemoryEntry.MAX_TAGS * MemoryEntry.MAX_TAG_LENGTH) * 6 + 4_096
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -47,7 +53,7 @@ object MemoryExportCodec {
     /** Streams an export to [out] page by page; peak memory is one page. Returns the entry count. */
     suspend fun write(out: Appendable, exportedAt: Long, pager: MemoryPager, pageSize: Int = PAGE_SIZE): Int {
         require(pageSize > 0) { "pageSize must be > 0" }
-        out.append(json.encodeToString(MemoryExportHeader.serializer(), MemoryExportHeader(exportedAt = exportedAt))).append('\n')
+        out.append(json.encodeToString(MemoryExportHeader.serializer(), MemoryExportHeader(format = FORMAT, version = VERSION, exportedAt = exportedAt))).append('\n')
         var count = 0
         var last: MemoryEntry? = null
         while (true) {

@@ -66,11 +66,13 @@ class AppContainer(context: Context) {
 
     val audit: AuditLog = InMemoryAuditLog(
         restored = restored.entries,
+        capacity = journal.capacity,
+        restoredAnchor = restored.anchor,
         onAppend = { entry -> ioWriter.execute { runCatching { journal.append(entry) } } },
     )
 
     /** Integrity of the journal as loaded at startup. */
-    val restoredChain: ChainVerification = AuditLog.verifyChain(restored.entries)
+    val restoredChain: ChainVerification = AuditLog.verifyChain(restored.entries, restored.anchor)
     val corruptJournalLines: Int = restored.corruptLines
 
     val grants: GrantTable = settings.grantTable()

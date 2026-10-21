@@ -1,6 +1,8 @@
 package com.ntpx.alchemist.data
 
 import com.ntpx.alchemist.agent.AuditEntry
+import com.ntpx.alchemist.agent.AuditHashing
+import com.ntpx.alchemist.agent.ChainAnchor
 import com.ntpx.alchemist.agent.AuditType
 import org.json.JSONObject
 import java.io.File
@@ -11,22 +13,29 @@ import java.io.File
  */
 class AuditJournal(private val file: File, private val maxLines: Int = 5_000) {
 
-    data class Loaded(val entries: List<AuditEntry>, val corruptLines: Int)
+    /** [anchor] is where [entries] must start: genesis, or the checkpoint written by the last compaction. */
+    data class Loaded(val entries: List<AuditEntry>, val corruptLines: Int, val anchor: ChainAnchor)
 
     /** Lines currently on disk; compaction keeps this at most [maxLines] + [slack]. */
     private var lineCount = 0
     private val slack = (maxLines / 5).coerceAtLeast(1)
 
-    /** Reads the journal, keeping only the newest [maxLines] lines in memory while scanning. */
+    /** Largest number of entries the file can hold between compactions. */
+    val capacity: Int get() = maxLines + slack
+
+    private val anchorFile = File(file.parentFile, file.name + ".anchor")
+
+    /** Reads the journal (bounded by compaction) and its anchor checkpoint. */
     @Synchronized
     fun load(): Loaded {
-        if (!file.exists()) return Loaded(emptyList(), 0)
-        val tail = ArrayDeque<String>(maxLines)
+        val anchor = readAnchor()
+        if (!file.exists()) return Loaded(emptyList(), 0, anchor)
+        val tail = ArrayDeque<String>(capacity)
         var total = 0
         file.bufferedReader().useLines { lines ->
             lines.filter { it.isNotBlank() }.forEach { line ->
                 total++
-                if (tail.size == maxLines) tail.removeFirst()
+                if (tail.size == capacity) tail.removeFirst()
                 tail.addLast(line)
             }
         }
@@ -38,7 +47,18 @@ class AuditJournal(private val file: File, private val maxLines: Int = 5_000) {
                 null
             }
         }
-        return Loaded(entries, corrupt)
+        // More lines than compaction ever leaves means the file grew outside this class.
+        if (total > capacity) corrupt += total - capacity
+        return Loaded(entries, corrupt, anchor)
+    }
+
+    private fun readAnchor(): ChainAnchor {
+        if (!anchorFile.exists()) return ChainAnchor.GENESIS
+        val parts = anchorFile.readText().trim().split('\t')
+        val sequence = parts.getOrNull(0)?.toLongOrNull()
+        val hash = parts.getOrNull(1)
+        // An unreadable checkpoint can't vouch for anything; fall back to requiring the full chain.
+        return if (sequence != null && hash != null && hash.length == AuditHashing.GENESIS.length) ChainAnchor(sequence, hash) else ChainAnchor.GENESIS
     }
 
     /** Appends one entry and compacts once the file outgrows its bound, so disk use stays bounded. */
@@ -61,8 +81,13 @@ class AuditJournal(private val file: File, private val maxLines: Int = 5_000) {
                 tail.addLast(line)
             }
         }
+        if (tail.size == lineCount && tail.size <= maxLines) return
+        val newHead = tail.firstOrNull()?.let(::decode)
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(tail.joinToString("\n", postfix = if (tail.isEmpty()) "" else "\n"))
+        // Record the checkpoint first: a crash between the two writes leaves a journal that fails
+        // verification (visible) rather than one that silently passes with a dropped prefix.
+        if (newHead != null) anchorFile.writeText("${newHead.sequence}\t${newHead.previousHash}\n")
         if (!tmp.renameTo(file)) {
             file.writeText(tmp.readText())
             tmp.delete()

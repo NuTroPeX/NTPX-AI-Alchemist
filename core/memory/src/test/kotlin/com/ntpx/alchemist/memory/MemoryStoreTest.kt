@@ -155,4 +155,30 @@ class MemoryStoreTest {
         assertEquals(MemorySummary.PREVIEW_CHARS + 50, s.get(long.id)!!.content.length)
         assertEquals(1, s.observeCount().first())
     }
+
+    @Test
+    fun headerWithoutExplicitFormatOrVersionIsRejected() = runTest {
+        val good = """{"id":"a","namespace":"default","content":"hi","createdAt":1}"""
+        assertTrue(MemoryExportCodec.decode("{\"exportedAt\":1}\n$good").isFailure)
+        assertTrue(MemoryExportCodec.decode("{\"format\":\"ntpx-alchemist-memory\",\"exportedAt\":1}\n$good").isFailure)
+    }
+
+    @Test
+    fun largestValidEntryRoundTripsWithinLineLimit() = runTest {
+        // Worst case for escaping: control characters encode as \uXXXX (6 chars each).
+        val content = "a" + "\u0001".repeat(MemoryEntry.MAX_CONTENT - 1)
+        val tags = (1..MemoryEntry.MAX_TAGS).map { "t$it".padEnd(MemoryEntry.MAX_TAG_LENGTH, 'x') }.toSet()
+        val entry = MemoryEntry("big", "default", content, tags, createdAt = 1)
+        val decoded = MemoryExportCodec.decode(MemoryExportCodec.encode(listOf(entry), 1)).getOrThrow()
+        assertEquals(entry, decoded.entries.single())
+    }
+
+    @Test
+    fun tooManyTagsAreRejectedAtSave() = runTest {
+        try {
+            store().put("c", tags = (0..MemoryEntry.MAX_TAGS).map { "t$it" }.toSet())
+            fail("expected rejection")
+        } catch (_: IllegalArgumentException) {
+        }
+    }
 }

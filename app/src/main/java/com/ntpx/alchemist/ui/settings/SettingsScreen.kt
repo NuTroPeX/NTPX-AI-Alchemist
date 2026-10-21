@@ -61,7 +61,7 @@ class SettingsViewModel(private val container: AppContainer, private val agentId
             settings = settings,
             grants = container.grants.snapshot(agentId),
             audit = audit.takeLast(AUDIT_VISIBLE).asReversed(),
-            chain = AuditLog.verifyChain(audit),
+            chain = container.audit.verify(),
         )
     }
         // Re-verifying the chain hashes every retained entry; keep that off the main thread.

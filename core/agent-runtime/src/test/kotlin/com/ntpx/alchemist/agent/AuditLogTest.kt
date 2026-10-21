@@ -88,4 +88,25 @@ class AuditLogTest {
         assertEquals(InMemoryAuditLog.MAX_DETAIL_CHARS, entry.detail.length)
         assertEquals(ChainVerification.Valid, log.verify())
     }
+
+    @Test
+    fun removedPrefixFailsAgainstAnchor() {
+        val log = log()
+        repeat(5) { log.append("a", "t", AuditType.STEP_STARTED, "s$it") }
+        val withoutPrefix = log.entries.value.drop(2)
+        // Self-consistent on its own…
+        assertEquals(ChainVerification.Valid, AuditLog.verifyChain(withoutPrefix))
+        // …but not from where the chain is recorded to start.
+        assertTrue(AuditLog.verifyChain(withoutPrefix, ChainAnchor.GENESIS) is ChainVerification.Broken)
+        val restored = InMemoryAuditLog(restored = withoutPrefix, restoredAnchor = ChainAnchor.GENESIS)
+        assertTrue(restored.verify() is ChainVerification.Broken)
+    }
+
+    @Test
+    fun ownTrimMovesAnchorAndStaysValid() {
+        val log = log(capacity = 3)
+        repeat(10) { log.append("a", "t", AuditType.STEP_STARTED, "s$it") }
+        assertEquals(ChainAnchor.of(log.entries.value.first()), log.anchor)
+        assertEquals(ChainVerification.Valid, log.verify())
+    }
 }

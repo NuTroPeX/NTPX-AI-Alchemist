@@ -136,15 +136,18 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
     }
 
     /**
-     * Streams the file twice: once to validate every line, then to import in batches. A bad file
-     * changes nothing, and any export this app writes can be restored regardless of size.
+     * Streams the file twice: once to validate every line, then to import in batches inside a
+     * single transaction. A bad file, or any failure mid-import, changes nothing; and any export
+     * this app writes can be restored regardless of size.
      */
     fun import(context: Context, uri: Uri) = viewModelScope.launch {
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
                 fun open() = context.contentResolver.openInputStream(uri)?.bufferedReader() ?: error("Could not open file")
                 open().use { reader -> MemoryExportCodec.read(reader) { } }
-                open().use { reader -> MemoryExportCodec.read(reader) { batch -> store.import(batch) } }.second
+                store.importAtomically { sink ->
+                    open().use { reader -> MemoryExportCodec.read(reader) { batch -> sink(batch) } }.second
+                }
             }
         }
         messages.value = outcome.fold({ "Imported $it entries" }, { "Import failed: ${it.message}" })

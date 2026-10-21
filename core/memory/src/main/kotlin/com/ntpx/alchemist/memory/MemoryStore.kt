@@ -24,11 +24,14 @@ data class MemoryEntry(
         require(NAMESPACE.matches(namespace)) { "namespace '$namespace' must match ${NAMESPACE.pattern}" }
         require(content.isNotBlank()) { "content must not be blank" }
         require(content.length <= MAX_CONTENT) { "content longer than $MAX_CONTENT characters" }
+        require(tags.size <= MAX_TAGS) { "at most $MAX_TAGS tags per memory" }
         tags.forEach { require(TAG.matches(it)) { "tag '$it' must match ${TAG.pattern}" } }
     }
 
     companion object {
         const val MAX_CONTENT = 20_000
+        const val MAX_TAGS = 32
+        const val MAX_TAG_LENGTH = 48
         val NAMESPACE = Regex("^[a-z0-9][a-z0-9_-]{0,31}$")
         val TAG = Regex("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,47}$")
         const val DEFAULT_NAMESPACE = "default"

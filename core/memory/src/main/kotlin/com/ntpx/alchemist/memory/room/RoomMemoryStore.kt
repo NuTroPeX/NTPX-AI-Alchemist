@@ -12,6 +12,7 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.withTransaction
 import com.ntpx.alchemist.memory.MemoryEntry
 import com.ntpx.alchemist.memory.MemoryRanker
 import com.ntpx.alchemist.memory.MemoryStore
@@ -214,9 +215,19 @@ class RoomMemoryStore private constructor(
 
     /** Restores entries from an export, replacing any with the same id. Tags are normalised like new entries. */
     suspend fun import(entries: List<MemoryEntry>): Int {
-        dao.upsertAll(entries.map { MemoryRow.from(it.copy(tags = normaliseTags(it.tags))) })
+        dao.upsertAll(entries.map(::importRow))
         return entries.size
     }
+
+    /**
+     * Runs [block] inside one database transaction and hands it a sink for batches of entries.
+     * Every batch commits together, or none does if [block] throws (I/O error, bad line, disk full),
+     * so a failed restore never leaves the store half-overwritten.
+     */
+    suspend fun <T> importAtomically(block: suspend (sink: suspend (List<MemoryEntry>) -> Unit) -> T): T =
+        database.withTransaction { block { batch -> dao.upsertAll(batch.map(::importRow)) } }
+
+    private fun importRow(entry: MemoryEntry) = MemoryRow.from(entry.copy(tags = normaliseTags(entry.tags)))
 
     fun close() = database.close()
 

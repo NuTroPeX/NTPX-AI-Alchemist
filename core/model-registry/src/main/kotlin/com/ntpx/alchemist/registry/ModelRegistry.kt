@@ -51,31 +51,24 @@ class InMemoryModelRegistry(initial: Collection<ModelDescriptor> = emptyList()) 
         state.update { current -> sorted(current.filterNot { it.id == model.id } + model) }
     }
 
+    /** Result reflects the update that actually committed, even under concurrent modification. */
     override fun unregister(id: String): Boolean {
-        var removed = false
-        state.update { current ->
-            val next = current.filterNot { it.id == id }
-            removed = next.size != current.size
-            next
+        while (true) {
+            val current = state.value
+            if (current.none { it.id == id }) return false
+            if (state.compareAndSet(current, current.filterNot { it.id == id })) return true
         }
-        return removed
     }
 
     override fun get(id: String): ModelDescriptor? = state.value.firstOrNull { it.id == id }
 
     override fun setAvailability(id: String, availability: Availability): Boolean {
-        var found = false
-        state.update { current ->
-            current.map {
-                if (it.id == id) {
-                    found = true
-                    it.copy(availability = availability)
-                } else {
-                    it
-                }
-            }
+        while (true) {
+            val current = state.value
+            if (current.none { it.id == id }) return false
+            val next = current.map { if (it.id == id) it.copy(availability = availability) else it }
+            if (state.compareAndSet(current, next)) return true
         }
-        return found
     }
 
     private fun sorted(models: Collection<ModelDescriptor>): List<ModelDescriptor> =

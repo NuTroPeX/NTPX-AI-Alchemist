@@ -144,4 +144,13 @@ class WiringTest {
         val events = s.runtime.run(task).toList()
         assertEquals(Permission.INVOKE_LOCAL_MODEL, events.filterIsInstance<TaskEvent.StepDenied>().single().permission)
     }
+
+    @Test
+    fun namespacedMemoryPortWritesWhereItReads() = runTest {
+        val memory = InMemoryMemoryStore()
+        val port = StoreMemoryPort(memory, namespace = "work")
+        port.remember("quarterly plan", setOf("t"))
+        assertEquals("work", memory.all().single().namespace)
+        assertEquals(listOf("quarterly plan"), port.recall("quarterly", 5))
+    }
 }

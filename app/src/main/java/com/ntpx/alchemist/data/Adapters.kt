@@ -71,5 +71,9 @@ class StoreMemoryPort(private val store: MemoryStore, private val namespace: Str
         store.search(query, namespace, limit).map { it.entry.content }
 
     override suspend fun remember(content: String, tags: Set<String>): String =
-        store.put(content.take(com.ntpx.alchemist.memory.MemoryEntry.MAX_CONTENT), tags = tags).id
+        store.put(
+            content.take(com.ntpx.alchemist.memory.MemoryEntry.MAX_CONTENT),
+            namespace = namespace ?: com.ntpx.alchemist.memory.MemoryEntry.DEFAULT_NAMESPACE,
+            tags = tags,
+        ).id
 }
