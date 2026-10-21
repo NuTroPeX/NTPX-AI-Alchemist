@@ -15,10 +15,13 @@ import androidx.room.Update
 import com.ntpx.alchemist.memory.MemoryEntry
 import com.ntpx.alchemist.memory.MemoryRanker
 import com.ntpx.alchemist.memory.MemoryStore
+import com.ntpx.alchemist.memory.MemorySummary
 import com.ntpx.alchemist.memory.ScoredMemory
 import com.ntpx.alchemist.memory.normaliseTags
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 @Entity(tableName = "memory", indices = [Index("namespace"), Index("updated_at")])
@@ -50,8 +53,58 @@ internal data class MemoryRow(
     }
 }
 
+/** Preview projection for list screens: truncated content plus the full length. */
+internal data class MemorySummaryRow(
+    val id: String,
+    val namespace: String,
+    val content: String,
+    val tags: String,
+    @androidx.room.ColumnInfo(name = "created_at") val createdAt: Long,
+    @androidx.room.ColumnInfo(name = "updated_at") val updatedAt: Long,
+    val pinned: Boolean,
+    @androidx.room.ColumnInfo(name = "content_length") val contentLength: Int,
+) {
+    fun toSummary() = MemorySummary(
+        MemoryRow(id, namespace, content, tags, createdAt, updatedAt, pinned).toEntry(),
+        contentLength,
+    )
+}
+
+private const val SUMMARY_COLUMNS =
+    "id, namespace, substr(content, 1, 600) AS content, tags, created_at, updated_at, pinned, length(content) AS content_length"
+
+/** Ranking reads only a prefix of each row, which bounds search memory regardless of entry size. */
+private const val SCAN_COLUMNS =
+    "id, namespace, substr(content, 1, 4000) AS content, tags, created_at, updated_at, pinned"
+
+private const val DISPLAY_ORDER = "ORDER BY pinned DESC, updated_at DESC, id ASC"
+
 @Dao
 internal interface MemoryDao {
+    @Query("SELECT $SUMMARY_COLUMNS FROM memory $DISPLAY_ORDER LIMIT :limit")
+    fun observeSummaries(limit: Int): Flow<List<MemorySummaryRow>>
+
+    @Query("SELECT $SUMMARY_COLUMNS FROM memory WHERE namespace = :namespace $DISPLAY_ORDER LIMIT :limit")
+    fun observeSummariesIn(namespace: String, limit: Int): Flow<List<MemorySummaryRow>>
+
+    @Query("SELECT COUNT(*) FROM memory")
+    fun observeCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM memory WHERE namespace = :namespace")
+    fun observeCountIn(namespace: String): Flow<Int>
+
+    @Query("SELECT $SCAN_COLUMNS FROM memory $DISPLAY_ORDER LIMIT :limit")
+    suspend fun scan(limit: Int): List<MemoryRow>
+
+    @Query("SELECT $SCAN_COLUMNS FROM memory WHERE namespace = :namespace $DISPLAY_ORDER LIMIT :limit")
+    suspend fun scanIn(namespace: String, limit: Int): List<MemoryRow>
+
+    @Query("SELECT * FROM memory WHERE id IN (:ids)")
+    suspend fun getMany(ids: List<String>): List<MemoryRow>
+
+    @Query("UPDATE memory SET pinned = :pinned, updated_at = :updatedAt WHERE id = :id")
+    suspend fun setPinned(id: String, pinned: Boolean, updatedAt: Long): Int
+
     @Query("SELECT * FROM memory ORDER BY pinned DESC, updated_at DESC, id ASC")
     fun observeAll(): Flow<List<MemoryRow>>
 
@@ -63,12 +116,6 @@ internal interface MemoryDao {
 
     @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC")
     suspend fun inNamespace(namespace: String): List<MemoryRow>
-
-    @Query("SELECT * FROM memory ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
-    suspend fun recent(limit: Int): List<MemoryRow>
-
-    @Query("SELECT * FROM memory WHERE namespace = :namespace ORDER BY pinned DESC, updated_at DESC, id ASC LIMIT :limit")
-    suspend fun recentInNamespace(namespace: String, limit: Int): List<MemoryRow>
 
     @Query("SELECT * FROM memory ORDER BY created_at ASC, id ASC LIMIT :limit")
     suspend fun firstPage(limit: Int): List<MemoryRow>
@@ -118,6 +165,15 @@ class RoomMemoryStore private constructor(
     override fun observe(namespace: String?): Flow<List<MemoryEntry>> =
         (if (namespace == null) dao.observeAll() else dao.observeNamespace(namespace)).map { rows -> rows.map(MemoryRow::toEntry) }
 
+    override fun observeSummaries(limit: Int, namespace: String?): Flow<List<MemorySummary>> =
+        (if (namespace == null) dao.observeSummaries(limit) else dao.observeSummariesIn(namespace, limit))
+            .map { rows -> rows.map(MemorySummaryRow::toSummary) }
+
+    override fun observeCount(namespace: String?): Flow<Int> =
+        if (namespace == null) dao.observeCount() else dao.observeCountIn(namespace)
+
+    override suspend fun setPinned(id: String, pinned: Boolean): Boolean = dao.setPinned(id, pinned, clock()) > 0
+
     override suspend fun put(content: String, namespace: String, tags: Set<String>, pinned: Boolean): MemoryEntry {
         val now = clock()
         val entry = MemoryEntry(UUID.randomUUID().toString(), namespace, content.trim(), normaliseTags(tags), now, now, pinned)
@@ -132,10 +188,16 @@ class RoomMemoryStore private constructor(
         return dao.update(MemoryRow.from(entry.copy(createdAt = existing.createdAt, updatedAt = clock()))) > 0
     }
 
-    /** Ranks the newest [SCAN_LIMIT] rows; the cap bounds search cost only, never [all] or export. */
+    /**
+     * Ranks a content prefix of the newest [SCAN_LIMIT] rows on a background dispatcher, then
+     * loads full content for the winners only. The caps bound search cost, never [all] or export.
+     */
     override suspend fun search(query: String, namespace: String?, limit: Int): List<ScoredMemory> {
-        val candidates = if (namespace == null) dao.recent(SCAN_LIMIT) else dao.recentInNamespace(namespace, SCAN_LIMIT)
-        return ranker.rank(query, candidates.map(MemoryRow::toEntry), limit)
+        val candidates = if (namespace == null) dao.scan(SCAN_LIMIT) else dao.scanIn(namespace, SCAN_LIMIT)
+        val ranked = withContext(Dispatchers.Default) { ranker.rank(query, candidates.map(MemoryRow::toEntry), limit) }
+        if (ranked.isEmpty()) return emptyList()
+        val full = dao.getMany(ranked.map { it.entry.id }).associateBy { it.id }
+        return ranked.mapNotNull { scored -> full[scored.entry.id]?.let { ScoredMemory(it.toEntry(), scored.score) } }
     }
 
     override suspend fun delete(id: String): Boolean = dao.delete(id) > 0
@@ -150,9 +212,9 @@ class RoomMemoryStore private constructor(
         (if (after == null) dao.firstPage(limit) else dao.pageAfter(after.createdAt, after.id, limit)).map(MemoryRow::toEntry)
     }
 
-    /** Restores entries from an export, replacing any with the same id. */
+    /** Restores entries from an export, replacing any with the same id. Tags are normalised like new entries. */
     suspend fun import(entries: List<MemoryEntry>): Int {
-        dao.upsertAll(entries.map(MemoryRow::from))
+        dao.upsertAll(entries.map { MemoryRow.from(it.copy(tags = normaliseTags(it.tags))) })
         return entries.size
     }
 
@@ -160,7 +222,7 @@ class RoomMemoryStore private constructor(
 
     companion object {
         /** Upper bound on rows scanned per search; ample for a personal store. */
-        const val SCAN_LIMIT = 5_000
+        const val SCAN_LIMIT = 2_000
         const val DATABASE_NAME = "alchemist-memory.db"
 
         fun create(context: Context, clock: () -> Long = System::currentTimeMillis, ranker: MemoryRanker = MemoryRanker()): RoomMemoryStore =

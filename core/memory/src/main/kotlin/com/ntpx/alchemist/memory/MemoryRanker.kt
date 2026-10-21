@@ -46,13 +46,14 @@ class MemoryRanker(
 
     companion object {
         private val STOP_WORDS = setOf(
-            "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or",
+            "a", "an", "and", "i", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or",
             "that", "the", "this", "to", "was", "with",
         )
 
         fun tokenize(text: String): List<String> =
             text.lowercase()
                 .split(Regex("[^\\p{L}\\p{N}]+"))
-                .filter { it.length > 1 && it !in STOP_WORDS }
+                // Single characters stay searchable (tags like "x"); "a" and "i" are stop words.
+                .filter { it.isNotEmpty() && it !in STOP_WORDS }
     }
 }

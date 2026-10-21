@@ -58,14 +58,14 @@ in `data/Adapters.kt`.
   `core/memory/schemas/`).
 - `MemoryRanker` — BM25-style lexical ranking with tag, phrase and pin boosts. An
   embeddings ranker can replace it once an on-device embeddings model is available.
-- `MemoryExportCodec` — versioned JSON export/import so the user owns the data.
+- `MemoryExportCodec` — versioned JSON Lines export/import that streams both ways (one entry per line, validated before any write), so any export the app produces can be restored.
 
 ### `:app`
 - Jetpack Compose + Material 3, neon-noir theme (Rajdhani, JetBrains Mono; OFL licences in
   `docs/licenses/`).
 - Tabs: **Registry** (filter by capability/placement/readiness), **Agents** (run a goal, live step
   timeline, loaded MCP tools), **Memory** (add, search, pin, delete, export to a file,
-  import from file, clear with confirmation), **Security** (routing toggles, per-permission grants,
+  import from a file (both stream as JSON Lines, so any export restores), clear with confirmation), **Security** (routing toggles, per-permission grants,
   audit log with live chain verification).
 - `AppContainer` — manual DI. Settings and grants persist in private SharedPreferences; the audit
   chain persists as JSON lines in private storage and is re-verified at startup.

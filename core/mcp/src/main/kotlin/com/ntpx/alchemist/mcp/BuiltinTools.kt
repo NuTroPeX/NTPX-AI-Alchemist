@@ -98,17 +98,17 @@ class MathTool : ToolProvider {
         }
 
         private fun term(): BigDecimal {
-            var value = power()
+            var value = unary()
             while (true) {
                 value = when {
-                    eat('*') -> value.multiply(power(), MC)
+                    eat('*') -> value.multiply(unary(), MC)
                     eat('/') -> {
-                        val divisor = power()
+                        val divisor = unary()
                         if (divisor.signum() == 0) throw ArithmeticException("division by zero")
                         value.divide(divisor, MC)
                     }
                     eat('%') -> {
-                        val divisor = power()
+                        val divisor = unary()
                         if (divisor.signum() == 0) throw ArithmeticException("modulo by zero")
                         value.remainder(divisor, MC)
                     }
@@ -117,10 +117,12 @@ class MathTool : ToolProvider {
             }
         }
 
+        // Precedence: unary signs bind looser than '^', so -2 ^ 2 = -(2 ^ 2) = -4,
+        // while a signed exponent still works: 2 ^ -1 = 0.5. Right-associative via unary() -> power().
         private fun power(): BigDecimal {
-            val base = unary()
+            val base = primary()
             if (!eat('^')) return base
-            val exponent = power() // right-associative
+            val exponent = unary()
             require(exponent.stripTrailingZeros().scale() <= 0) { "exponent must be an integer" }
             // Compare as BigDecimal first: narrowing a huge value to Int would wrap and slip past the limit.
             require(exponent.abs() <= BigDecimal(MAX_EXPONENT)) { "exponent must be within ±$MAX_EXPONENT" }
@@ -131,7 +133,7 @@ class MathTool : ToolProvider {
         private fun unary(): BigDecimal = when {
             eat('-') -> unary().negate()
             eat('+') -> unary()
-            else -> primary()
+            else -> power()
         }
 
         private fun primary(): BigDecimal {

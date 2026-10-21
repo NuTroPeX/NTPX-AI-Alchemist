@@ -1,21 +1,27 @@
 package com.ntpx.alchemist.memory
 
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import java.io.Reader
 
-/** Portable JSON export so the user owns their memory and can move or audit it. */
+/**
+ * Portable export so the user owns their memory and can move or audit it.
+ *
+ * Format (JSON Lines): the first line is a [MemoryExportHeader]; every following non-blank line is
+ * one [MemoryEntry]. Both writing and reading stream one entry at a time, so any export this app
+ * writes can be restored by it, whatever the store's size.
+ */
 @Serializable
-data class MemoryExport(
-    val format: String = FORMAT,
-    val version: Int = VERSION,
+data class MemoryExportHeader(
+    val format: String = MemoryExportCodec.FORMAT,
+    val version: Int = MemoryExportCodec.VERSION,
     val exportedAt: Long,
-    val entries: List<MemoryEntry>,
-) {
-    companion object {
-        const val FORMAT = "ntpx-alchemist-memory"
-        const val VERSION = 1
-    }
+)
+
+/** A fully read export; only for small exports and tests. */
+data class MemoryExport(val header: MemoryExportHeader, val entries: List<MemoryEntry>) {
+    val exportedAt: Long get() = header.exportedAt
 }
 
 /** Supplies entries in stable order, one page at a time. Return an empty page when done. */
@@ -23,36 +29,88 @@ fun interface MemoryPager {
     suspend fun next(after: MemoryEntry?, limit: Int): List<MemoryEntry>
 }
 
-object MemoryExportCodec {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+class MemoryImportException(message: String) : IllegalArgumentException(message)
 
+object MemoryExportCodec {
+    const val FORMAT = "ntpx-alchemist-memory"
+    const val VERSION = 2
     const val PAGE_SIZE = 200
 
-    /**
-     * Streams an export to [out] page by page, so peak memory is one page of entries rather than
-     * the whole store. The output is the same document [decode] reads.
-     */
+    /** Longest line accepted on import: a maximum-size entry with every character escaped, plus metadata. */
+    const val MAX_LINE_CHARS = MemoryEntry.MAX_CONTENT * 6 + 4_096
+
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    /** Oldest first, ties broken by id; matches the Room keyset query. */
+    val EXPORT_ORDER: Comparator<MemoryEntry> = compareBy<MemoryEntry> { it.createdAt }.thenBy { it.id }
+
+    /** Streams an export to [out] page by page; peak memory is one page. Returns the entry count. */
     suspend fun write(out: Appendable, exportedAt: Long, pager: MemoryPager, pageSize: Int = PAGE_SIZE): Int {
         require(pageSize > 0) { "pageSize must be > 0" }
-        out.append("{\"format\":").append(json.encodeToString(String.serializer(), MemoryExport.FORMAT))
-        out.append(",\"version\":").append(MemoryExport.VERSION.toString())
-        out.append(",\"exportedAt\":").append(exportedAt.toString())
-        out.append(",\"entries\":[\n")
+        out.append(json.encodeToString(MemoryExportHeader.serializer(), MemoryExportHeader(exportedAt = exportedAt))).append('\n')
         var count = 0
         var last: MemoryEntry? = null
         while (true) {
             val page = pager.next(last, pageSize)
             if (page.isEmpty()) break
             for (entry in page) {
-                if (count > 0) out.append(",\n")
-                out.append(json.encodeToString(MemoryEntry.serializer(), entry))
+                out.append(json.encodeToString(MemoryEntry.serializer(), entry)).append('\n')
                 count++
             }
             last = page.last()
             if (page.size < pageSize) break
         }
-        out.append("\n]}\n")
         return count
+    }
+
+    /**
+     * Streams an export from [reader], handing entries to [onBatch] in batches of [batchSize].
+     * Validates every line; throws [MemoryImportException] on the first problem.
+     * Run it once with a no-op [onBatch] to validate before importing, so a bad file changes nothing.
+     */
+    suspend fun read(
+        reader: Reader,
+        batchSize: Int = PAGE_SIZE,
+        onBatch: suspend (List<MemoryEntry>) -> Unit,
+    ): Pair<MemoryExportHeader, Int> {
+        require(batchSize > 0) { "batchSize must be > 0" }
+        val lines = BoundedLineReader(reader, MAX_LINE_CHARS)
+        val headerLine = lines.next() ?: throw MemoryImportException("File is empty")
+        val header = try {
+            json.decodeFromString(MemoryExportHeader.serializer(), headerLine)
+        } catch (e: SerializationException) {
+            throw MemoryImportException("Not an NTPX Alchemist memory export")
+        } catch (e: IllegalArgumentException) {
+            throw MemoryImportException("Not an NTPX Alchemist memory export")
+        }
+        if (header.format != FORMAT) throw MemoryImportException("Not an NTPX Alchemist memory export")
+        if (header.version != VERSION) throw MemoryImportException("Unsupported export version ${header.version}")
+
+        val batch = ArrayList<MemoryEntry>(batchSize)
+        val seen = HashSet<String>()
+        var count = 0
+        var lineNumber = 1
+        while (true) {
+            val line = lines.next() ?: break
+            lineNumber++
+            if (line.isBlank()) continue
+            val entry = try {
+                json.decodeFromString(MemoryEntry.serializer(), line)
+            } catch (e: SerializationException) {
+                throw MemoryImportException("Line $lineNumber is not a valid memory entry")
+            } catch (e: IllegalArgumentException) {
+                throw MemoryImportException("Line $lineNumber: ${e.message}")
+            }
+            if (!seen.add(entry.id)) throw MemoryImportException("Line $lineNumber repeats id ${entry.id}")
+            batch += entry
+            count++
+            if (batch.size == batchSize) {
+                onBatch(batch.toList())
+                batch.clear()
+            }
+        }
+        if (batch.isNotEmpty()) onBatch(batch.toList())
+        return header to count
     }
 
     /** Convenience for small, already-loaded lists (tests, in-memory stores). */
@@ -66,13 +124,38 @@ object MemoryExportCodec {
         }
     }
 
-    /** Oldest first, ties broken by id; matches the Room keyset query. */
-    val EXPORT_ORDER: Comparator<MemoryEntry> = compareBy<MemoryEntry> { it.createdAt }.thenBy { it.id }
+    /** Convenience for small exports (tests): reads everything into memory. */
+    suspend fun decode(text: String): Result<MemoryExport> = runCatching {
+        val entries = mutableListOf<MemoryEntry>()
+        val (header, _) = read(text.reader()) { entries += it }
+        MemoryExport(header, entries)
+    }
+}
 
-    fun decode(text: String): Result<MemoryExport> = runCatching {
-        val export = json.decodeFromString(MemoryExport.serializer(), text)
-        require(export.format == MemoryExport.FORMAT) { "Not an NTPX Alchemist memory export" }
-        require(export.version == MemoryExport.VERSION) { "Unsupported export version ${export.version}" }
-        export
+/** Line reader that refuses lines longer than [maxChars] instead of buffering them. */
+internal class BoundedLineReader(private val reader: Reader, private val maxChars: Int) {
+    private val buffer = CharArray(8_192)
+    private var length = 0
+    private var position = 0
+    private var eof = false
+
+    fun next(): String? {
+        val line = StringBuilder()
+        while (true) {
+            if (position == length) {
+                if (eof) return if (line.isEmpty()) null else line.toString()
+                length = reader.read(buffer)
+                position = 0
+                if (length < 0) {
+                    length = 0
+                    eof = true
+                    continue
+                }
+            }
+            val c = buffer[position++]
+            if (c == '\n') return line.toString().removeSuffix("\r")
+            if (line.length >= maxChars) throw MemoryImportException("A line exceeds $maxChars characters")
+            line.append(c)
+        }
     }
 }

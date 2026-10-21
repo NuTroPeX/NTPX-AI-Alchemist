@@ -157,6 +157,13 @@ class AgentRuntimeTest {
     }
 
     @Test
+    fun cancellingOnTheStartedEventIsAudited() = runTest {
+        val h = harness()
+        h.runtime.run(planner.plan("agent", "goal")).take(1).toList()
+        assertEquals(listOf(AuditType.TASK_STARTED, AuditType.TASK_CANCELLED), h.audit.entries.value.map { it.type })
+    }
+
+    @Test
     fun cancellingCollectorIsAudited() = runTest {
         val h = harness()
         h.runtime.run(planner.plan("agent", "goal")).take(2).toList()

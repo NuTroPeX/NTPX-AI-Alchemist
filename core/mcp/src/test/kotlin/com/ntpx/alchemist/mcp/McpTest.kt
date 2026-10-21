@@ -103,6 +103,10 @@ class McpTest {
         val math = MathTool()
         assertEquals("15.2", math.evaluate("(2 + 3) * 4 ^ 2 / 5 + -0.8").stripTrailingZeros().toPlainString())
         assertEquals("512", math.evaluate("2 ^ 3 ^ 2").toPlainString())
+        assertEquals("-4", math.evaluate("-2 ^ 2").toPlainString())
+        assertEquals("4", math.evaluate("(-2) ^ 2").toPlainString())
+        assertEquals("0.5", math.evaluate("2 ^ -1").stripTrailingZeros().toPlainString())
+        assertEquals("-8", math.evaluate("2 * -2 ^ 2").toPlainString())
         assertEquals("1", math.evaluate("10 % 3").toPlainString())
         assertTrue(client.callTool("math.evaluate", mapOf("expression" to "1/0")).isError)
         assertTrue(client.callTool("math.evaluate", mapOf("expression" to "2 ^ 100000")).isError)
@@ -147,6 +151,7 @@ class McpTest {
             """{"jsonrpc":"2.0","id":{},"method":"ping"}""",
             """{"jsonrpc":"2.0","id":1,"error":"boom"}""",
             """{"jsonrpc":"2.0","id":1,"method":5}""",
+            """{"jsonrpc":"2.0","id":true,"method":"ping"}""",
             """{"jsonrpc":"2.0","id":1,"method":{}}""",
             """{"jsonrpc":"2.0","id":1}""",
             """[1,2,3]""",

@@ -34,14 +34,16 @@ class AgentRuntime(
     fun run(task: AgentTask): Flow<TaskEvent> = flow {
         val outputs = mutableListOf<String>()
         audit.append(task.agentId, task.id, AuditType.TASK_STARTED, task.goal)
-        emit(TaskEvent.Started(task.id, task.goal, task.steps.size))
-
-        if (task.steps.size > task.budget.maxSteps) {
-            fail(task, -1, "Plan has ${task.steps.size} steps; budget allows ${task.budget.maxSteps}", TaskStatus.FAILED, outputs)
-            return@flow
-        }
-
+        // Everything after TASK_STARTED, including the first emit, is inside the try so that a
+        // collector cancelling at any point still leaves a terminal TASK_CANCELLED record.
         try {
+            emit(TaskEvent.Started(task.id, task.goal, task.steps.size))
+
+            if (task.steps.size > task.budget.maxSteps) {
+                fail(task, -1, "Plan has ${task.steps.size} steps; budget allows ${task.budget.maxSteps}", TaskStatus.FAILED, outputs)
+                return@flow
+            }
+
             for ((index, step) in task.steps.withIndex()) {
                 audit.append(task.agentId, task.id, AuditType.STEP_STARTED, "#$index ${step.label}")
                 emit(TaskEvent.StepStarted(task.id, index, step.label))

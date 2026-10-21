@@ -36,7 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import com.ntpx.alchemist.memory.MemoryEntry
+import com.ntpx.alchemist.memory.MemorySummary
+import com.ntpx.alchemist.memory.toSummary
 import com.ntpx.alchemist.memory.MemoryExportCodec
 import com.ntpx.alchemist.memory.room.RoomMemoryStore
 import com.ntpx.alchemist.ui.components.Badge
@@ -45,7 +46,12 @@ import com.ntpx.alchemist.ui.components.GlassCard
 import com.ntpx.alchemist.ui.components.SectionHeader
 import com.ntpx.alchemist.ui.theme.Ntpx
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -58,37 +64,37 @@ import java.text.DateFormat
 import java.util.Date
 
 data class MemoryUiState(
-    val entries: List<MemoryEntry> = emptyList(),
+    val entries: List<MemorySummary> = emptyList(),
+    val total: Int = 0,
     val query: String = "",
-    val results: List<MemoryEntry>? = null,
+    val results: List<MemorySummary>? = null,
 )
 
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
     private val query = MutableStateFlow("")
-    private val results = MutableStateFlow<List<MemoryEntry>?>(null)
     private val messages = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = messages.asStateFlow()
 
-    val state: StateFlow<MemoryUiState> = combine(store.observe(), query, results) { entries, q, r ->
-        MemoryUiState(entries, q, r)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MemoryUiState())
+    /**
+     * Search results derive from the query AND store changes, so writes from anywhere (the agent,
+     * imports, other screens) refresh them. mapLatest cancels a stale search when either changes.
+     */
+    private val results: Flow<List<MemorySummary>?> =
+        combine(query.debounce { if (it.isBlank()) 0 else SEARCH_DEBOUNCE_MS }, store.observeCount()) { q, _ -> q }
+            .mapLatest { q -> if (q.isBlank()) null else store.search(q, limit = SEARCH_LIMIT).map { it.entry.toSummary() } }
+            .onStart { emit(null) }
 
-    private var searchJob: Job? = null
+    val state: StateFlow<MemoryUiState> = combine(
+        store.observeSummaries(LIST_LIMIT),
+        store.observeCount(),
+        query,
+        results,
+    ) { entries, total, q, r -> MemoryUiState(entries, total, q, if (q.isBlank()) null else r) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MemoryUiState())
 
     fun setQuery(text: String) {
         query.value = text
-        searchJob?.cancel()
-        if (text.isBlank()) {
-            results.value = null
-            return
-        }
-        searchJob = viewModelScope.launch { publishSearch(text) }
-    }
-
-    /** Publishes results only if [text] is still the visible query, so a slow older search can't win. */
-    private suspend fun publishSearch(text: String) {
-        val found = store.search(text, limit = 50).map { it.entry }
-        if (query.value == text) results.value = found
     }
 
     /** [onSaved] runs only after the insert succeeds, so a rejected draft stays in the editor. */
@@ -98,32 +104,26 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
         viewModelScope.launch {
             runCatching { store.put(content, tags = tagSet) }
                 .onFailure { messages.value = "Not saved: ${it.message}" }
-                .onSuccess {
-                    onSaved()
-                    refreshSearch()
-                }
+                .onSuccess { onSaved() }
         }
     }
 
-    fun togglePin(entry: MemoryEntry) = viewModelScope.launch {
-        store.update(entry.copy(pinned = !entry.pinned))
-        refreshSearch()
+    /** Uses an id-based update so a truncated preview can never overwrite stored content. */
+    fun togglePin(item: MemorySummary) = viewModelScope.launch {
+        store.setPinned(item.entry.id, !item.entry.pinned)
     }
 
-    fun delete(entry: MemoryEntry) = viewModelScope.launch {
-        store.delete(entry.id)
-        refreshSearch()
+    fun delete(item: MemorySummary) = viewModelScope.launch {
+        store.delete(item.entry.id)
     }
 
     fun clearAll() = viewModelScope.launch {
-        searchJob?.cancel()
         val removed = store.clear()
-        results.value = null
         query.value = ""
         messages.value = "Deleted $removed entries"
     }
 
-    /** Writes every entry to a user-chosen document (streamed to a file, so size is not bound by Binder limits). */
+    /** Streams every entry to a user-chosen document, one page at a time. */
     fun exportTo(context: Context, uri: Uri) = viewModelScope.launch {
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
@@ -135,45 +135,32 @@ class MemoryViewModel(private val store: RoomMemoryStore) : ViewModel() {
         messages.value = outcome.fold({ "Exported $it entries" }, { "Export failed: ${it.message}" })
     }
 
+    /**
+     * Streams the file twice: once to validate every line, then to import in batches. A bad file
+     * changes nothing, and any export this app writes can be restored regardless of size.
+     */
     fun import(context: Context, uri: Uri) = viewModelScope.launch {
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
-                val reader = context.contentResolver.openInputStream(uri)?.bufferedReader() ?: error("Could not open file")
-                val text = reader.use { readBounded(it, MAX_IMPORT_CHARS) } ?: throw IllegalArgumentException("File is too large")
-                MemoryExportCodec.decode(text).getOrThrow()
+                fun open() = context.contentResolver.openInputStream(uri)?.bufferedReader() ?: error("Could not open file")
+                open().use { reader -> MemoryExportCodec.read(reader) { } }
+                open().use { reader -> MemoryExportCodec.read(reader) { batch -> store.import(batch) } }.second
             }
         }
-        outcome
-            .onSuccess { export ->
-                messages.value = "Imported ${store.import(export.entries)} entries"
-                refreshSearch()
-            }
-            .onFailure { messages.value = "Import failed: ${it.message}" }
+        messages.value = outcome.fold({ "Imported $it entries" }, { "Import failed: ${it.message}" })
     }
 
     fun consumeMessage() {
         messages.value = null
     }
 
-    private suspend fun refreshSearch() {
-        val q = query.value
-        if (q.isNotBlank()) publishSearch(q)
-    }
-
     companion object {
-        const val MAX_IMPORT_CHARS = 20_000_000
-
-        /** Reads at most [limit] characters; returns null if the source is longer, without loading the rest. */
-        fun readBounded(reader: java.io.Reader, limit: Int): String? {
-            val out = StringBuilder()
-            val buffer = CharArray(8_192)
-            while (true) {
-                val n = reader.read(buffer)
-                if (n < 0) return out.toString()
-                if (out.length + n > limit) return null
-                out.appendRange(buffer, 0, n)
-            }
-        }
+        /** Rows kept in the on-screen list; search reaches everything. */
+        const val LIST_LIMIT = 200
+        const val SEARCH_LIMIT = 50
+        const val SEARCH_DEBOUNCE_MS = 150L
+        const val EXPORT_FILE_NAME = "alchemist-memory.jsonl"
+        const val EXPORT_MIME_TYPE = "application/x-ndjson"
     }
 }
 
@@ -185,7 +172,7 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
     var draft by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
-    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(MemoryViewModel.EXPORT_MIME_TYPE)) { uri ->
         if (uri != null) vm.exportTo(context.applicationContext, uri)
     }
 
@@ -233,11 +220,17 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
             )
         }
         item {
-            SectionHeader(if (state.results != null) "${visible.size} matches" else "${state.entries.size} stored") {
+            SectionHeader(
+                when {
+                    state.results != null -> "${visible.size} matches"
+                    state.total > state.entries.size -> "${state.entries.size} of ${state.total} shown"
+                    else -> "${state.total} stored"
+                },
+            ) {
                 Row {
-                    TextButton(onClick = { exporter.launch("alchemist-memory.json") }, enabled = state.entries.isNotEmpty()) { Text("EXPORT") }
-                    TextButton(onClick = { importer.launch(arrayOf("application/json", "text/plain")) }) { Text("IMPORT") }
-                    TextButton(onClick = { confirmClear = true }, enabled = state.entries.isNotEmpty()) { Text("CLEAR", color = Ntpx.Danger) }
+                    TextButton(onClick = { exporter.launch(MemoryViewModel.EXPORT_FILE_NAME) }, enabled = state.total > 0) { Text("EXPORT") }
+                    TextButton(onClick = { importer.launch(arrayOf(MemoryViewModel.EXPORT_MIME_TYPE, "application/json", "text/plain", "application/octet-stream")) }) { Text("IMPORT") }
+                    TextButton(onClick = { confirmClear = true }, enabled = state.total > 0) { Text("CLEAR", color = Ntpx.Danger) }
                 }
             }
         }
@@ -257,8 +250,8 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
                 else EmptyState("Memory is empty", "Saved notes and agent outcomes appear here. Everything stays on this device.")
             }
         }
-        items(visible, key = { it.id }) { entry ->
-            MemoryCard(entry, onPin = { vm.togglePin(entry) }, onDelete = { vm.delete(entry) })
+        items(visible, key = { it.entry.id }) { item ->
+            MemoryCard(item, onPin = { vm.togglePin(item) }, onDelete = { vm.delete(item) })
         }
     }
 
@@ -266,7 +259,7 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Delete all memory?") },
-            text = { Text("This permanently removes ${state.entries.size} entries from this device. Export first if you want a copy.") },
+            text = { Text("This permanently removes ${state.total} entries from this device. Export first if you want a copy.") },
             confirmButton = {
                 TextButton(onClick = {
                     vm.clearAll()
@@ -279,9 +272,10 @@ fun MemoryScreen(vm: MemoryViewModel, contentPadding: PaddingValues) {
 }
 
 @Composable
-private fun MemoryCard(entry: MemoryEntry, onPin: () -> Unit, onDelete: () -> Unit) {
+private fun MemoryCard(item: MemorySummary, onPin: () -> Unit, onDelete: () -> Unit) {
+    val entry = item.entry
     GlassCard(accent = if (entry.pinned) Ntpx.Magenta.copy(alpha = 0.6f) else Ntpx.GlassBorder) {
-        Text(entry.content, style = MaterialTheme.typography.bodyLarge)
+        Text(if (item.truncated) entry.content + "…" else entry.content, style = MaterialTheme.typography.bodyLarge)
         if (entry.tags.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { entry.tags.sorted().take(4).forEach { Badge(it, Ntpx.Violet) } }
         }

@@ -119,4 +119,40 @@ class MemoryStoreTest {
         val decoded = MemoryExportCodec.decode(MemoryExportCodec.encode(emptyList(), 1)).getOrThrow()
         assertTrue(decoded.entries.isEmpty())
     }
+
+    @Test
+    fun importRejectsBadLinesTooLongLinesAndDuplicates() = runTest {
+        val header = """{"format":"ntpx-alchemist-memory","version":2,"exportedAt":1}"""
+        val good = """{"id":"a","namespace":"default","content":"hi","createdAt":1}"""
+        suspend fun fails(text: String) = MemoryExportCodec.decode(text).isFailure
+        assertTrue(fails("$header\n{oops}"))
+        assertTrue(fails("$header\n$good\n$good"))
+        assertTrue(fails("""{"format":"ntpx-alchemist-memory","version":1,"exportedAt":1}"""))
+        assertTrue(fails(""))
+        assertTrue(fails(header + "\n" + "x".repeat(MemoryExportCodec.MAX_LINE_CHARS + 1)))
+        assertEquals(1, MemoryExportCodec.decode("$header\r\n\r\n$good\r\n").getOrThrow().entries.size)
+    }
+
+    @Test
+    fun readStreamsInBatchesWithoutLoadingEverything() = runTest {
+        val s = store()
+        repeat(500) { s.put("entry $it") }
+        val text = MemoryExportCodec.encode(s.all(), 1)
+        val batches = mutableListOf<Int>()
+        val (_, count) = MemoryExportCodec.read(text.reader(), batchSize = 128) { batches += it.size }
+        assertEquals(500, count)
+        assertEquals(listOf(128, 128, 128, 116), batches)
+    }
+
+    @Test
+    fun summariesTruncateContentAndPinningKeepsFullText() = runTest {
+        val s = store()
+        val long = s.put("y".repeat(MemorySummary.PREVIEW_CHARS + 50))
+        val summary = s.observeSummaries(10).first().single()
+        assertTrue(summary.truncated)
+        assertEquals(MemorySummary.PREVIEW_CHARS, summary.entry.content.length)
+        assertTrue(s.setPinned(long.id, true))
+        assertEquals(MemorySummary.PREVIEW_CHARS + 50, s.get(long.id)!!.content.length)
+        assertEquals(1, s.observeCount().first())
+    }
 }

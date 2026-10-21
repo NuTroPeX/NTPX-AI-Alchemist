@@ -35,7 +35,9 @@ import com.ntpx.alchemist.ui.components.SectionHeader
 import com.ntpx.alchemist.ui.theme.Ntpx
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -61,7 +63,10 @@ class SettingsViewModel(private val container: AppContainer, private val agentId
             audit = audit.takeLast(AUDIT_VISIBLE).asReversed(),
             chain = AuditLog.verifyChain(audit),
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
+    }
+        // Re-verifying the chain hashes every retained entry; keep that off the main thread.
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     val restoredChain: ChainVerification get() = container.restoredChain
     val corruptLines: Int get() = container.corruptJournalLines

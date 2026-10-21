@@ -80,4 +80,12 @@ class AuditLogTest {
         assertEquals((0L until 2_000L).toList(), persisted.map { it.sequence })
         assertEquals(ChainVerification.Valid, AuditLog.verifyChain(persisted.toList()))
     }
+
+    @Test
+    fun oversizedDetailIsTruncatedBeforeHashing() {
+        val log = log()
+        val entry = log.append("a", "t", AuditType.TASK_STARTED, "x".repeat(10_000))
+        assertEquals(InMemoryAuditLog.MAX_DETAIL_CHARS, entry.detail.length)
+        assertEquals(ChainVerification.Valid, log.verify())
+    }
 }

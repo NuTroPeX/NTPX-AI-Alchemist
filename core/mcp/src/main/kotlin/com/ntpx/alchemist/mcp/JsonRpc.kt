@@ -7,7 +7,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
@@ -79,7 +81,9 @@ object JsonRpcCodec {
         }
         val id = when (val raw = obj["id"]) {
             null, JsonNull -> null
-            is JsonPrimitive -> raw
+            // JSON-RPC ids are strings or numbers; booleans are primitives too but are not valid ids.
+            is JsonPrimitive -> raw.takeIf { it.isString || it.longOrNull != null || it.doubleOrNull != null }
+                ?: throw invalidRequest("id must be a string or number")
             else -> throw invalidRequest("id must be a string or number")
         }
         val method = when (val raw = obj["method"]) {
@@ -113,6 +117,6 @@ object JsonRpcCodec {
 
     /** Best-effort id extraction so error responses can still be correlated by the caller. */
     fun peekId(text: String): JsonElement = runCatching {
-        (json.parseToJsonElement(text) as? JsonObject)?.get("id")?.takeIf { it is JsonPrimitive }
+        (json.parseToJsonElement(text) as? JsonObject)?.get("id")?.takeIf { it is JsonPrimitive && (it.isString || it.longOrNull != null || it.doubleOrNull != null) }
     }.getOrNull() ?: JsonNull
 }

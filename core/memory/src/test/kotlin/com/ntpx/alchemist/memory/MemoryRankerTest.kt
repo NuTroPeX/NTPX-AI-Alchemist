@@ -59,4 +59,11 @@ class MemoryRankerTest {
         val newer = entry("same words", updatedAt = 5)
         assertEquals(newer.id, ranker.rank("same words", listOf(older, newer), 2).first().entry.id)
     }
+
+    @Test
+    fun singleCharacterTagsAndTermsAreSearchable() {
+        val tagged = entry("unrelated words", tags = setOf("x"))
+        assertEquals(tagged.id, ranker.rank("x", listOf(tagged, entry("other")), 5).single().entry.id)
+        assertEquals(listOf("x", "3"), MemoryRanker.tokenize("I a x 3"))
+    }
 }

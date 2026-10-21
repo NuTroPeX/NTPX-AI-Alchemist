@@ -116,6 +116,8 @@ class InMemoryAuditLog(
     override val entries: StateFlow<List<AuditEntry>> = state.asStateFlow()
 
     override fun append(agentId: String, taskId: String, type: AuditType, detail: String): AuditEntry {
+        // Bounded so one huge goal or output can't bloat the log or the on-disk journal.
+        val detail = if (detail.length > MAX_DETAIL_CHARS) detail.take(MAX_DETAIL_CHARS - 1) + "…" else detail
         val entry = synchronized(lock) {
             val last = state.value.lastOrNull()
             val sequence = (last?.sequence ?: -1L) + 1
@@ -129,5 +131,9 @@ class InMemoryAuditLog(
             created
         }
         return entry
+    }
+
+    companion object {
+        const val MAX_DETAIL_CHARS = 2_000
     }
 }
